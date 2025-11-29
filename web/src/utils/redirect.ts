@@ -53,6 +53,10 @@ export function getSafeRedirectPath(
     return safeDefault;
   }
 
-  // Prepend basePath if configured
+  // Prepend basePath if configured and not already present
+  if (basePath && trimmed.startsWith(basePath)) {
+    return trimmed;
+  }
+
   return basePath + trimmed;
 }
