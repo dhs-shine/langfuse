@@ -42,14 +42,16 @@
 | `10-architecture` | Langfuse 전체 시스템 경계, 모노레포 아키텍처, 패키지 간 의존성 |
 | `20-core-domain` | PostgreSQL, ClickHouse 스키마 및 와이드 이벤트 데이터 모델 분석 |
 | `30-customization` | 사내 플랫폼 통합을 위한 커스텀 인증, 비용 계산, 알림 등 연동 설계 |
+| `40-anatomy-deep-dive` | Langfuse 소스코드 레벨의 데이터 파이프라인, 워커 로직, ClickHouse MV 최적화 기법 심층 분석 |
 | `90-decisions` | 진행 중 아직 확정되지 않은 오픈된 정책 및 기술 결정 사항 추적 |
 
 ## 빠른 읽기 경로
 
 | 독자 | 읽는 순서 | 목적 |
 | --- | --- | --- |
-| 시스템 아키텍트 | 01 -> 03 -> 15 -> 04 | 도입 요구사항, 전체 아키텍처, 소스 구조, 데이터 모델 파악 |
-| 백엔드 엔지니어 | 03 -> 15 -> 04 -> 05 | 모노레포 빌드 시스템 파악, 데이터 파이프라인 분석 및 커스텀 구현 포인트 확인 |
+| 시스템 아키텍트 | 01 -> 03 -> 15 -> 04 -> 06 | 도입 요구사항, 전체 아키텍처, 소스 구조, 데이터 모델 및 수집 파이프라인 파악 |
+| 백엔드 엔지니어 | 03 -> 15 -> 04 -> 05 -> 07 -> 09 | 모노레포 빌드, 데이터 모델, 커스텀 구현 포인트, 워커 시스템 및 tRPC 라우팅 구조 확인 |
+| 데이터 엔지니어 | 03 -> 04 -> 06 -> 08 | 와이드 이벤트 모델, ClickHouse 데이터 수집 및 뷰 롤업 최적화 파악 |
 | 인프라/보안 담당자 | 03 -> 05 -> 11 | DB/캐시 인프라 구조 확인, 사내 SSO 연동 및 보안 미결정 사항 점검 |
 
 ## 전체 문서 흐름
@@ -60,6 +62,12 @@ flowchart TD
   F --> A[03 Architecture]
   A --> SA[15 Source Code Architecture]
   A --> DM[04 Data Model and Storage]
+  
+  SA --> IP[06 Ingestion Pipeline]
+  IP --> QW[07 Queue and Worker System]
+  DM --> CH[08 ClickHouse Schema & MVs]
+  SA --> TR[09 tRPC and Next.js]
+  
   SA --> CI[05 Internal Observability Customization]
   DM --> CI
   CI --> OD[11 Open Decisions]
@@ -74,6 +82,10 @@ flowchart TD
 | [15 Source Code Architecture](10-architecture/15-source-code-architecture.md) | Turborepo, Next.js, tRPC, BullMQ 기반 소스코드 디렉토리 레이아웃 및 의존성 규칙 정의 |
 | [04 Data Model and Storage](20-core-domain/04-data-model-and-storage.md) | Prisma(PostgreSQL) 릴레이셔널 모델과 ClickHouse 분석 이벤트 모델의 분담 |
 | [05 Internal Observability Customization](30-customization/05-internal-observability.md) | 사내 SSO 통합, 커스텀 LLM 가격 산정 방식 추가 등 사내 전용 연동 전략 |
+| [06 Ingestion Pipeline](40-anatomy-deep-dive/06-ingestion-pipeline.md) | API 요청부터 S3 업로드, 큐 전달, 워커 배치 인서트에 이르는 데이터 수집 파이프라인 코드 해부 |
+| [07 Queue and Worker System](40-anatomy-deep-dive/07-queue-and-worker-system.md) | BullMQ 기반의 작업 큐, Worker 로직, 에러 복구(Retry Baggage) 메커니즘 분석 |
+| [08 ClickHouse Schema & MVs](40-anatomy-deep-dive/08-clickhouse-schema-and-mvs.md) | 실시간 분석을 위한 ClickHouse AggregatingMergeTree와 Materialized View 롤업 최적화 해부 |
+| [09 tRPC and Next.js](40-anatomy-deep-dive/09-trpc-and-nextjs.md) | Next.js API Routes와 tRPC의 라우터 처리, 병렬 데이터 패칭 구조 해부 |
 | [11 Open Decisions](90-decisions/11-open-decisions.md) | 인프라 배포 옵션, 데이터 보존 기간(Retention) 등 오픈 결정을 추적 |
 
 ## 문서 작성 규칙
