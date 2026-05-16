@@ -1,54 +1,177 @@
 # 09 tRPC and Next.js Anatomy
 
-Langfuse의 Web UI 셸(프론트엔드)과 내부 API 통신은 **Next.js** 프레임워크와 **tRPC (TypeScript Remote Procedure Call)** 를 통해 이루어집니다. 이 문서에서는 프론트엔드에서 데이터를 요청하여 받아오기까지의 해부학적 구조를 분석합니다.
+> **선행 문서**: [03 Architecture](../10-architecture/03-architecture.md) · [15 Source Code Architecture](../10-architecture/15-source-code-architecture.md)
+> **소스 딥다이브**: [12 Query Source Breakdown](../50-source-analysis/12-query-source-breakdown.md)
 
-## 1. tRPC 라우터 구조 (`web/src/server/api/routers`)
+---
 
-Langfuse는 타입 안정성(Type-Safety)을 극대화하기 위해 REST API 대신 tRPC를 주력으로 사용합니다. 클라이언트(React)와 서버(Node.js) 간에 타입을 공유하여 빌드 타임에 에러를 잡습니다.
+Langfuse의 프론트엔드(React)와 백엔드(Next.js)는 **tRPC**를 통해 타입 안전(Type-safe)한 통신을 수행합니다. REST API가 아닌 tRPC를 선택한 이유, 미들웨어 체인의 구조, 그리고 ClickHouse/Prisma 병렬 쿼리 패턴을 분석합니다.
 
-- **위치**: `web/src/server/api/routers/` 하위에 도메인별 라우터(`traces.ts`, `projects.ts`, `models.ts` 등)가 분리되어 있습니다.
-- **프로시저(Procedure) 체인**: 모든 API 요청은 tRPC 미들웨어를 통과하며 인증 및 인가(Authorization)를 확인합니다.
+## tRPC 요청 처리 전체 흐름
+
+```mermaid
+sequenceDiagram
+    participant UI as React Component
+    participant Hook as useQuery / useMutation
+    participant TRPC as tRPC Client<br/>(HTTP Batch Link)
+    participant MW as tRPC Middleware Chain
+    participant Resolver as Router Resolver
+    participant PG as Prisma (PostgreSQL)
+    participant CH as ClickHouse Client
+
+    UI->>Hook: trpc.trace.all.useQuery({ projectId, ... })
+    Hook->>TRPC: HTTP POST /api/trpc/trace.all
+    TRPC->>MW: Context 생성 → 미들웨어 체인 실행
+
+    Note over MW: 1. publicProcedure (세션 확인)<br/>2. protectedProcedure (로그인 강제)<br/>3. protectedProjectProcedure (프로젝트 권한)
+
+    MW->>PG: ctx.prisma.project.findUnique()<br/>(프로젝트 존재 + 멤버십 확인)
+    PG-->>MW: project + membership
+
+    MW->>Resolver: 인가 완료, 라우터 로직 실행
+
+    par 병렬 쿼리
+        Resolver->>CH: getTracesTable() (ClickHouse)
+        Resolver->>PG: applyCommentFilters() (Prisma)
+    end
+
+    CH-->>Resolver: traces[]
+    PG-->>Resolver: commentFilterState
+
+    Resolver-->>TRPC: { traces }
+    TRPC-->>Hook: 타입 안전한 응답
+    Hook-->>UI: 렌더링
+```
+
+## 미들웨어 체인 (Procedure Layers)
+
+🔗 [`web/src/server/api/trpc.ts`](file:///Users/dhsshin/Documents/LLMOps/langfuse/web/src/server/api/trpc.ts)
+
+```mermaid
+flowchart TD
+    pub["publicProcedure<br/>───────────<br/>세션 확인만 (Guest 가능)"]
+    prot["protectedProcedure<br/>───────────<br/>로그인 필수 (Session 강제)"]
+    proj["protectedProjectProcedure<br/>───────────<br/>프로젝트 접근 권한 확인<br/>(RBAC 체크)"]
+    trace["protectedGetTraceProcedure<br/>───────────<br/>특정 트레이스 존재 확인<br/>+ public 트레이스 접근 지원"]
+
+    pub --> prot
+    prot --> proj
+    proj --> trace
+```
+
+| Procedure | 역할 | 체크 대상 |
+|---|---|---|
+| `publicProcedure` | 기본 컨텍스트 생성 | 세션 유무만 확인 |
+| `protectedProcedure` | 로그인 강제 | `ctx.session.user` 존재 여부 |
+| `protectedProjectProcedure` | 프로젝트 RBAC | `ProjectMembership` + Role 확인 |
+| `protectedGetTraceProcedure` | 트레이스 접근 | ClickHouse에서 트레이스 조회 + public 여부 |
+
+## 라우터 구조 맵
+
+```mermaid
+flowchart TD
+    Root["appRouter"] --> Trace["traceRouter"]
+    Root --> Obs["observationsRouter"]
+    Root --> Score["scoreRouter"]
+    Root --> Session["sessionRouter"]
+    Root --> Project["projectRouter"]
+    Root --> Model["modelRouter"]
+    Root --> Prompt["promptRouter"]
+    Root --> Dataset["datasetRouter"]
+    Root --> Eval["evalRouter"]
+    Root --> Dashboard["dashboardRouter"]
+    Root --> BatchExport["batchExportRouter"]
+
+    Trace --> T_All["all (query)"]
+    Trace --> T_Count["countAll (query)"]
+    Trace --> T_Metrics["metrics (query)"]
+    Trace --> T_ById["byId (query)"]
+    Trace --> T_Detail["byIdWithObservationsAndScores (query)"]
+    Trace --> T_Delete["deleteMany (mutation)"]
+    Trace --> T_Bookmark["bookmark (mutation)"]
+```
+
+## 병렬 데이터 패칭 패턴
+
+Langfuse의 tRPC 라우터에서 반복적으로 나타나는 핵심 패턴은 **Prisma(PostgreSQL)와 ClickHouse를 동시에 조회**하는 것입니다.
+
+### 예시 1: `traceRouter.metrics`
+
+🔗 [`traces.ts` L180-261](file:///Users/dhsshin/Documents/LLMOps/langfuse/web/src/server/api/routers/traces.ts#L180-L261)
+
+```mermaid
+flowchart LR
+    subgraph Input["tRPC Input"]
+        TI["traceIds[]<br/>filter[]"]
+    end
+
+    subgraph Parallel["Promise.all"]
+        CH1["getTracesTableMetrics()<br/>→ ClickHouse"]
+        CH2["getScoresForTraces()<br/>→ ClickHouse"]
+    end
+
+    subgraph Merge["결과 병합"]
+        AGG["aggregateScores()"]
+    end
+
+    TI --> CH1
+    CH1 --> CH2
+    CH2 --> AGG
+```
+
+### 예시 2: `traceRouter.filterOptions`
+
+🔗 [`traces.ts` L279-315](file:///Users/dhsshin/Documents/LLMOps/langfuse/web/src/server/api/routers/traces.ts#L279-L315)
 
 ```typescript
-// 예시: tRPC 라우터 정의 구조
-export const traceRouter = createTRPCRouter({
-  all: protectedProjectProcedure
-    .input(z.object({ projectId: z.string(), page: z.number() }))
-    .query(async ({ input, ctx }) => {
-      // 1. ctx.session에서 유저 정보 확인 완료 (protectedProjectProcedure가 처리)
-      // 2. ClickHouse에서 Trace 데이터 조회
-      const data = await clickhouseClient.query(...);
-      return data;
-    }),
+const [numericScoreNames, categoricalScoreNames, traceNames, tags, userIds, sessionIds] =
+  await Promise.all([
+    getNumericScoresGroupedByName(...),      // CH
+    getCategoricalScoresGroupedByName(...),  // CH
+    getTracesGroupedByName(...),             // CH
+    getTracesGroupedByTags(...),             // CH
+    getTracesGroupedByUsers(...),            // CH
+    getTracesGroupedBySessionId(...),        // CH
+  ]);
+```
+
+> **6개의 독립 ClickHouse 쿼리**를 한 번에 실행하여 가장 느린 쿼리의 응답 시간만큼만 대기합니다. 순차 실행 시 6배 느려질 수 있는 지점입니다.
+
+## ClickHouse 쿼리 보안 — Parameter Binding
+
+ClickHouse Node.js 클라이언트는 **named parameter binding**을 지원합니다. Langfuse는 이를 철저히 활용하여 SQL Injection을 원천 방지합니다.
+
+```typescript
+const query = `
+  SELECT id, start_time
+  FROM traces_7d_amt_mv
+  WHERE project_id = {projectId: String}
+  ORDER BY start_time DESC
+  LIMIT {limit: Int32} OFFSET {offset: Int32}
+`;
+
+await clickhouseClient().query({
+  query,
+  format: 'JSONEachRow',
+  query_params: {
+    projectId: input.projectId,  // ← 바인딩 (문자열 이스케이프 자동)
+    limit: input.limit,
+    offset: input.page * input.limit,
+  }
 });
 ```
 
-### `protectedProjectProcedure`의 역할
-가장 많이 사용되는 미들웨어로, 다음 작업을 수행합니다.
-1. 사용자가 로그인한 상태인지 확인 (NextAuth Session).
-2. 요청한 `projectId`에 대해 해당 사용자가 접근 권한(Viewer, Admin 등)이 있는지 Prisma (PostgreSQL)의 `ProjectMembership` 테이블을 조회하여 인가(Authorization).
-3. 권한이 확인된 사용자 정보와 프로젝트 식별자를 컨텍스트(`ctx`)에 담아 비즈니스 로직으로 넘김.
+| 접근 방식 | 보안 | Langfuse 사용 여부 |
+|---|---|---|
+| 문자열 보간 (`${input.projectId}`) | ❌ SQL Injection 취약 | 사용하지 않음 |
+| Named Parameter (`{projectId: String}`) | ✅ 자동 이스케이프 | ✅ 전체 적용 |
 
-## 2. Prisma와 ClickHouse 병렬 데이터 패칭
+---
 
-대시보드를 렌더링할 때, 유저의 프로젝트 설정이나 메타데이터는 **PostgreSQL(Prisma)**에서, 실제 Trace나 메트릭 데이터는 **ClickHouse**에서 읽어야 합니다. tRPC 리졸버 내부에서는 속도 최적화를 위해 이 두 작업을 병렬(Parallel)로 처리하는 경우가 많습니다.
+## 관련 문서
 
-```typescript
-// 병렬 호출 패턴
-const [projectMeta, traceData] = await Promise.all([
-  ctx.prisma.project.findUnique({ where: { id: input.projectId } }),
-  ctx.clickhouse.query({
-    query: `SELECT * FROM traces_7d_amt_mv WHERE project_id = {projectId: String}`,
-    format: 'JSONEachRow',
-    query_params: { projectId: input.projectId }
-  })
-]);
-```
-
-## 3. Server Components vs Client Components
-
-Langfuse는 Next.js App Router의 기능을 적극 활용합니다.
-- **Server Components**: 초기 페이지 로딩 시 검색 엔진 최적화(SEO)가 필요 없는 대시보드 구조라도, 번들 사이즈를 줄이고 서버에서 데이터를 직결로 가져오기 위해 레이아웃이나 정적 테이블을 서버 사이드에서 렌더링합니다.
-- **Client Components**: 사용자와 상호작용이 많은 필터 조건 변경, 차트 렌더링, 폼 입력 등의 영역은 `useQuery`(tRPC React Hooks)를 사용하여 브라우저에서 동적으로 데이터를 fetching하고 상태를 업데이트합니다.
-
-이러한 구조 덕분에 사내 커스텀 UI(예: 사내 결재 연동, 부서별 커스텀 뷰)를 추가할 때에도, 백엔드의 `routers` 폴더에 프로시저만 하나 추가하면 프론트엔드에서 타입이 즉시 자동 완성되어 매우 빠른 개발 사이클을 유지할 수 있습니다.
+| 방향 | 문서 |
+|---|---|
+| ⬇️ 소스 딥다이브 | [12 Query Source Breakdown](../50-source-analysis/12-query-source-breakdown.md) |
+| ⬅️ 이전 | [08 ClickHouse Schema & MVs](./08-clickhouse-schema-and-mvs.md) |
+| 🏠 색인 | [README](../README.md) |

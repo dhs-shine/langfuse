@@ -1,65 +1,117 @@
 # 06 Ingestion Pipeline Anatomy
 
-Langfuse 시스템에서 가장 높은 트래픽 부하를 견뎌야 하는 부분은 애플리케이션 로그(Traces, Observations)를 수집하는 **Ingestion 파이프라인**입니다. 단순 API 호출로 DB에 바로 쓰는 방식이 아닌, 고가용성과 데이터 유실 방지를 위한 3단계 구조를 가집니다.
+> **선행 문서**: [03 Architecture](../10-architecture/03-architecture.md) · [15 Source Code Architecture](../10-architecture/15-source-code-architecture.md)
+> **소스 딥다이브**: [10 Ingestion Source Breakdown](../50-source-analysis/10-ingestion-source-breakdown.md)
 
-## 1. 진입점: Next.js API Route (`ingestion.ts`)
+---
 
-수집 엔드포인트는 `web/src/pages/api/public/v1/ingestion` 등에 위치합니다. SDK가 이 API를 호출하면 다음 작업이 동기적으로 수행됩니다.
+Langfuse 시스템에서 가장 높은 트래픽 부하를 견뎌야 하는 부분은 애플리케이션 로그(Traces, Observations)를 수집하는 **Ingestion 파이프라인**입니다. 단순 API 호출로 DB에 바로 쓰는 방식이 아닌, 고가용성과 데이터 유실 방지를 위한 3단계 비동기 구조를 가집니다.
 
-1. **Authentication & Authorization (`ApiAuthService`)**:
-   - HTTP 헤더의 Public/Secret API Key를 확인.
-   - 키 유효성 검사, 해당 키가 속한 `projectId` 및 플랜(Plan) 기반의 이용 권한(Access Scope) 확인.
-2. **Rate Limiting (`RateLimitService`)**:
-   - 프로젝트별 Ingestion 한도를 확인. 초과 시 429 Too Many Requests 반환 및 백그라운드로 로깅하여 Fail-open 또는 제한 적용.
-3. **Zod Validation**:
-   - `req.body`를 Zod 스키마로 검사하여 악의적이거나 잘못 포맷된 페이로드 필터링.
-
-## 2. 1차 비동기 분기: `processEventBatch.ts`
-
-검증이 통과되면 실제 저장은 `@langfuse/shared/src/server/ingestion/processEventBatch.ts` 함수를 통해 처리됩니다. 이 함수는 핵심 비즈니스 로직을 포함합니다.
-
-### A. S3 / Blob Storage 캐싱 (Blocking)
-- `processEventBatch`는 먼저 요청된 이벤트 배치들을 `eventBodyId` 단위로 묶어 **S3(또는 호환 Object Storage)에 업로드(UploadJson)** 합니다.
-- **목적**: 대용량 페이로드(예: 매우 긴 프롬프트나 결과값)로 인해 ClickHouse나 Redis가 멈추는 것을 방지하고, 나중에 데이터를 재처리해야 하거나 에러 복구 시 활용하기 위한 원본 캐시.
-- S3 응답 지연(SlowDown Error) 발생 시 Secondary Queue(우선순위 낮은 큐)로 트래픽을 넘기는 보호 로직도 포함되어 있습니다.
-
-### B. BullMQ 큐 삽입 (Enqueueing)
-- S3 저장이 성공하면 각 이벤트는 `IngestionQueue` (Redis 기반 BullMQ)에 삽입됩니다.
-- **Sharding Key**: `projectId-eventBodyId`를 기준으로 샤딩되어 큐에 들어갑니다.
-- **Delay 처리**: 자정이나 날짜 변경선 부근(23:45 ~ 00:15)에서는 이벤트 중복 처리 방지 및 순서 조정을 위해 의도적인 지연(Delay, 기본 약 5초)을 주입하여 Enqueue합니다.
-
-이 시점에서 Web 서버는 클라이언트(SDK)에게 `207 Multi-Status` 또는 `200 OK`를 반환하며 연결을 종료합니다.
-
-## 3. Worker 처리: ClickHouse 일괄 저장 (Batch Insert)
-
-`worker/src/queues/ingestionQueue.ts` (또는 관련 컨슈머)가 BullMQ에서 메시지를 소비(Dequeue)합니다.
-
-- **Batching**: 워커는 메시지를 하나씩 ClickHouse에 Insert하지 않습니다. 일정한 시간(예: 수 초) 또는 버퍼 사이즈(예: 수천 건)만큼 메모리에 쌓아둔 뒤, ClickHouse Node Client를 통해 일괄(Batch) Insert를 수행합니다.
-- **ClickHouse의 특성**: ClickHouse는 초당 수만 번의 작은 Insert보다는 초당 한두 번의 대규모 Batch Insert 성능이 압도적으로 높습니다. 워커의 존재 이유는 이 Batch Insert를 만들기 위함입니다.
-- **메타데이터 폴백**: 만약 이벤트 처리 과정에서 PostgreSQL에 저장되어야 하는 관련 메타데이터(새로운 모델명 발견 등)가 필요하다면 워커가 Postgres와 통신하여 데이터를 갱신합니다.
-
-## 전체 인제스션 시퀀스 요약
+## End-to-End 시퀀스
 
 ```mermaid
 sequenceDiagram
-    participant SDK
-    participant WebAPI as Web API (ingestion.ts)
+    participant SDK as Client SDK
+    participant WebAPI as Web API<br/>(ingestion.ts)
+    participant Auth as ApiAuthService
+    participant RL as RateLimitService
+    participant PEB as processEventBatch()
     participant S3 as S3 / Blob Storage
-    participant Redis as BullMQ (IngestionQueue)
+    participant Redis as BullMQ<br/>(IngestionQueue)
     participant Worker as Worker Consumer
+    participant IS as IngestionService<br/>.mergeAndWrite()
     participant CH as ClickHouse
 
-    SDK->>WebAPI: POST /ingestion (Batch Events)
-    WebAPI->>WebAPI: 1. Auth & Rate Limit Check
-    WebAPI->>WebAPI: 2. Zod Validation
-    WebAPI->>S3: 3. Upload Event JSON
-    S3-->>WebAPI: Upload Success
-    WebAPI->>Redis: 4. Enqueue Job
-    Redis-->>WebAPI: Job IDs
-    WebAPI-->>SDK: 200 OK / 207 Multi-Status
-    
-    Note over Worker: Runs Asynchronously
-    Redis->>Worker: 5. Dequeue Jobs (Batch)
-    Worker->>Worker: 6. Buffer Events in Memory
-    Worker->>CH: 7. Batch Insert
+    SDK->>WebAPI: POST /api/public/ingestion (Batch Events)
+    WebAPI->>Auth: verifyAuthHeaderAndReturnScope()
+    Auth-->>WebAPI: { validKey, scope }
+    WebAPI->>RL: rateLimitRequest(scope, "ingestion")
+    Note over RL: Fail-open: Redis 장애 시에도 계속 진행
+    RL-->>WebAPI: OK
+
+    WebAPI->>PEB: processEventBatch(batch, authCheck)
+    PEB->>PEB: Zod 스키마 검증 + sortBatch()
+    PEB->>S3: Promise.allSettled(uploadJson)
+    S3-->>PEB: Upload Results
+
+    loop 각 eventBodyId 그룹
+        PEB->>PEB: isTraceIdInSample() 확인
+        PEB->>Redis: IngestionQueue.add(Job, { delay })
+    end
+
+    PEB-->>WebAPI: { successes, errors }
+    WebAPI-->>SDK: 207 Multi-Status
+
+    Note over Worker: 비동기 처리 (별도 Node.js 프로세스)
+    Redis->>Worker: Job Dequeue
+    Worker->>Worker: Redis 중복 체크 + S3 다운로드
+    Worker->>IS: mergeAndWrite(eventType, events)
+    IS->>IS: 기존 ClickHouse 레코드 조회 + 이벤트 병합
+    IS->>CH: ClickhouseWriter.addToQueue() → Batch INSERT
 ```
+
+## 1단계: 진입점 — Next.js API Route
+
+🔗 [`web/src/pages/api/public/ingestion.ts`](file:///Users/dhsshin/Documents/LLMOps/langfuse/web/src/pages/api/public/ingestion.ts)
+
+| 처리 순서 | 함수 | 역할 |
+|---|---|---|
+| 1 | `ApiAuthService.verifyAuthHeaderAndReturnScope()` | API Key 검증, projectId 추출, 이용 중단(suspend) 여부 확인 |
+| 2 | `RateLimitService.rateLimitRequest()` | 프로젝트별 초당 수집 한도 확인 (Fail-open) |
+| 3 | `batchType.safeParse(req.body)` | Zod로 요청 본문 구조 검증 |
+| 4 | `processEventBatch()` | 핵심 비즈니스 로직 위임 |
+
+## 2단계: 비동기 분기 — S3 캐싱 + BullMQ 큐
+
+🔗 [`packages/shared/src/server/ingestion/processEventBatch.ts`](file:///Users/dhsshin/Documents/LLMOps/langfuse/packages/shared/src/server/ingestion/processEventBatch.ts)
+
+```mermaid
+flowchart TD
+    Input["수신된 배치 이벤트"] --> Validate["Zod 스키마 검증<br/>(부분 성공 지원)"]
+    Validate --> Sort["sortBatch()<br/>Create 먼저, Update 나중"]
+    Sort --> Group["eventBodyId로 그룹핑"]
+    Group --> S3["S3에 JSON 업로드<br/>(Promise.allSettled)"]
+
+    S3 --> S3Check{모든 업로드 성공?}
+    S3Check -- No --> SlowDown["markProjectS3Slowdown()"]
+    SlowDown --> Abort["throw Error"]
+    S3Check -- Yes --> Sample["isTraceIdInSample()"]
+
+    Sample --> Sampled{샘플링 통과?}
+    Sampled -- No --> Drop["이벤트 폐기"]
+    Sampled -- Yes --> Enqueue["IngestionQueue.add()<br/>(delay 적용)"]
+```
+
+### S3 캐싱의 목적
+- 대용량 페이로드(프롬프트, 응답 텍스트)가 Redis를 거치지 않도록 분리
+- 에러 복구 시 원본 데이터 재처리 가능
+- ClickHouse 장애 시에도 S3에 원본이 보존됨
+
+### Delay 전략
+| 조건 | 딜레이 | 이유 |
+|---|---|---|
+| UTC 23:45~00:15 | `LANGFUSE_INGESTION_QUEUE_DELAY_MS` | 날짜 변경선에서 이벤트 순서 보장 |
+| OTel 소스 | 0ms | OTel은 자체 순서 보장 메커니즘 보유 |
+| 일반 API | `min(5000, env값)` | 동일 ID의 Create/Update 순서 보장 |
+
+## 3단계: Worker 처리 — ClickHouse Batch Insert
+
+🔗 [`worker/src/queues/ingestionQueue.ts`](file:///Users/dhsshin/Documents/LLMOps/langfuse/worker/src/queues/ingestionQueue.ts)
+
+| 처리 순서 | 함수 | 역할 |
+|---|---|---|
+| 1 | Redis `EXISTS` 체크 | 최근 5분 이내 처리 이력이 있으면 즉시 Skip |
+| 2 | `hasS3SlowdownFlag()` | S3 Slowdown 마킹된 프로젝트면 Secondary Queue로 이관 |
+| 3 | `s3Client.download()` | S3에서 JSON 파일 다운로드 (병렬 chunk) |
+| 4 | `IngestionService.mergeAndWrite()` | 기존 ClickHouse 레코드와 병합 후 메모리 버퍼에 추가 |
+| 5 | `ClickhouseWriter.flush()` | 주기적으로 메모리 버퍼를 Batch INSERT |
+
+---
+
+## 관련 문서
+
+| 방향 | 문서 |
+|---|---|
+| ⬇️ 소스 딥다이브 | [10 Ingestion Source Breakdown](../50-source-analysis/10-ingestion-source-breakdown.md) |
+| ➡️ 다음 | [07 Queue and Worker System](./07-queue-and-worker-system.md) |
+| 🏠 색인 | [README](../README.md) |

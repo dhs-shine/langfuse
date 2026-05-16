@@ -1,75 +1,119 @@
 # 11 Worker Source Breakdown
 
-이 문서는 Ingestion 파이프라인의 종착지이자, ClickHouse로 데이터를 밀어넣는 핵심 백그라운드 워커의 소스코드를 시각화와 함께 분석합니다.
-
-> **관련 상위 아키텍처 문서**
-> - 📄 [07 Queue and Worker System Anatomy](../40-anatomy-deep-dive/07-queue-and-worker-system.md)
+> **선행 문서**: [07 Queue and Worker System Anatomy](../40-anatomy-deep-dive/07-queue-and-worker-system.md) · [10 Ingestion Source Breakdown](./10-ingestion-source-breakdown.md)
+> **분석 대상 소스**:
+> - [`worker/src/queues/ingestionQueue.ts`](file:///Users/dhsshin/Documents/LLMOps/langfuse/worker/src/queues/ingestionQueue.ts) — BullMQ Processor 구현체
+> - [`worker/src/queues/workerManager.ts`](file:///Users/dhsshin/Documents/LLMOps/langfuse/worker/src/queues/workerManager.ts) — 워커 등록·메트릭·에러 핸들링
+> - [`worker/src/services/ClickhouseWriter/index.ts`](file:///Users/dhsshin/Documents/LLMOps/langfuse/worker/src/services/ClickhouseWriter/index.ts) — 메모리 버퍼 + Batch Insert
+> - [`worker/src/services/IngestionService/index.ts`](file:///Users/dhsshin/Documents/LLMOps/langfuse/worker/src/services/IngestionService/index.ts) — 이벤트 병합 및 enrichment
 
 ---
 
-## 워커 내부 처리 플로우차트
+## 워커 내부 전체 흐름도
 
-하나의 `IngestionQueue` Job이 Worker Node에 할당되었을 때 벌어지는 동작의 흐름입니다.
+하나의 BullMQ Job이 Dequeue되어 ClickHouse에 최종 기록되기까지의 전체 의사결정 흐름입니다.
 
 ```mermaid
 flowchart TD
-    Start((Job Dequeue)) --> RedisCheck{Redis에 최근<br/>처리 기록이 있는가?}
-    
-    RedisCheck -- Yes --> Skip[로직 즉시 종료<br/>(Skip)]
-    
-    RedisCheck -- No --> FlagCheck{S3 Slowdown<br/>마킹된 프로젝트인가?}
-    
-    FlagCheck -- Yes --> Redirect[Secondary Queue로<br/>Job 토스 후 종료]
-    
-    FlagCheck -- No --> S3Down[S3에서 JSON 다운로드<br/>(Chunk 병렬 처리)]
-    
-    S3Down --> SetRedis[Redis 처리 완료 캐시<br/>(EX 5분) 저장]
-    
-    SetRedis --> Merge[Prisma 메타데이터<br/>병합 및 갱신]
-    
-    Merge --> Buffer[ClickhouseWriter<br/>메모리 버퍼에 Push]
-    
-    Buffer --> Timer{타이머 초과 or<br/>배열 Max 도달?}
-    
-    Timer -- No --> Wait[대기]
-    Timer -- Yes --> Flush[(ClickHouse 일괄<br/>Batch Insert)]
+    Dequeue["BullMQ Job Dequeue<br/>(ingestionQueueProcessorBuilder)"] --> BlobLog{ENABLE_BLOB_STORAGE<br/>_FILE_LOG?}
+    BlobLog -- Yes --> WriteFileLog["ClickhouseWriter.addToQueue<br/>(BlobStorageFileLog)"]
+    BlobLog -- No --> SeenCheck
+
+    WriteFileLog --> SeenCheck{Redis에 최근<br/>처리 기록 존재?}
+    SeenCheck -- Yes --> Skip["recordIncrement(skipped: true)<br/>→ return (종료)"]
+    SeenCheck -- No --> SlowCheck{hasS3SlowdownFlag<br/>(projectId)?}
+
+    SlowCheck -- Yes --> Redirect["SecondaryIngestionQueue.add()<br/>→ return (종료)"]
+    SlowCheck -- No --> S3Download["S3에서 JSON 파일 다운로드<br/>(chunk 단위 병렬)"]
+
+    S3Download --> SetSeen["Redis에 처리 완료<br/>캐시 저장 (TTL 5분)"]
+    SetSeen --> MergeWrite["IngestionService<br/>.mergeAndWrite()"]
+
+    MergeWrite --> EventSwitch{"이벤트 타입 분기<br/>(switch)"}
+    EventSwitch --> Trace["processTraceEventList()"]
+    EventSwitch --> Obs["processObservationEventList()"]
+    EventSwitch --> Score["processScoreEventList()"]
+    EventSwitch --> DSItem["processDatasetRunItemEventList()"]
+
+    Trace --> CHWriter["ClickhouseWriter<br/>.addToQueue()"]
+    Obs --> CHWriter
+    Score --> CHWriter
+    DSItem --> CHWriter
+
+    CHWriter --> Buffer["메모리 버퍼 Array에 Push"]
+    Buffer --> FlushCheck{배열 크기 ≥<br/>batchSize?}
+    FlushCheck -- Yes --> Flush["flush() → writeToClickhouse()<br/>INSERT ... FORMAT JSONEachRow"]
+    FlushCheck -- No --> Timer["setInterval 타이머 대기<br/>(writeInterval ms)"]
+    Timer --> Flush
 ```
 
 ---
 
-## 1. `ingestionQueue.ts` 워커 구현체
+## 소스코드 라인 바이 라인 분석
 
-🔗 **Source File:** [`worker/src/queues/ingestionQueue.ts`](file:///Users/dhsshin/Documents/LLMOps/langfuse/worker/src/queues/ingestionQueue.ts)
+### 1단계: Redis 중복 방지 캐시 — `ingestionQueue.ts` L83-106
 
-이 파일은 BullMQ의 `Processor` 인터페이스 구현체를 제공합니다. 메인 함수인 `ingestionQueueProcessorBuilder` 내부를 들여다봅니다.
+🔗 [`ingestionQueue.ts` L83](file:///Users/dhsshin/Documents/LLMOps/langfuse/worker/src/queues/ingestionQueue.ts#L83-L106)
 
-### A. 중복 방지 캐싱 구조 (Redis Seen Event Cache)
 ```typescript
-if (env.LANGFUSE_ENABLE_REDIS_SEEN_EVENT_CACHE === "true" && redis && job.data.payload.data.fileKey) {
+if (env.LANGFUSE_ENABLE_REDIS_SEEN_EVENT_CACHE === "true" && redis && fileKey) {
   const key = `langfuse:ingestion:recently-processed:${projectId}:${type}:${eventBodyId}:${fileKey}`;
   const exists = await redis.exists(key);
   if (exists) {
-    recordIncrement("langfuse.ingestion.recently_processed_cache", ...);
-    return; // 스킵
+    recordIncrement("langfuse.ingestion.recently_processed_cache", 1, {
+      type: job.data.payload.data.type,
+      skipped: "true",
+    });
+    return;  // ← S3 다운로드조차 하지 않고 즉시 종료
   }
 }
 ```
-- **왜 중복이 발생하는가?**: SDK가 네트워크 통신 실패로 인해 동일한 이벤트를 재시도하거나, BullMQ의 특성 상 At-least-once 전달을 보장하기 때문에 동일한 Job이 여러 번 Dequeue될 가능성이 있습니다.
-- 워커는 S3에 올려진 파일 키(`fileKey`)를 기준으로 Redis에 조회하여, 최근 5분 이내에 처리된 이력(`exists`)이 있다면 S3에서 다운로드조차 하지 않고 조기에 종료(Return)합니다. 이를 통해 워커의 낭비되는 CPU 사이클과 S3 GET 요청 과금 비용을 크게 절약합니다.
 
-### B. Secondary Queue 릴레이 분기 (우선순위 라우팅)
+| 키 포맷 | 용도 |
+|---|---|
+| `langfuse:ingestion:recently-processed:{projectId}:{type}:{entityId}:{fileKey}` | SDK 재시도 또는 BullMQ at-least-once 전달로 인한 중복 Job 방지 |
+
+**왜 5분 TTL인가?** 처리 완료 후 Redis에 `EX 300` (L250)으로 캐시하여, 동일한 fileKey가 5분 이내에 다시 들어오면 S3 GET 비용과 CPU 연산을 절약합니다.
+
+---
+
+### 2단계: Secondary Queue 릴레이 — `ingestionQueue.ts` L108-133
+
+🔗 [`ingestionQueue.ts` L108](file:///Users/dhsshin/Documents/LLMOps/langfuse/worker/src/queues/ingestionQueue.ts#L108-L133)
+
+```mermaid
+flowchart LR
+    Job[Ingestion Job] --> Check1{환경변수로<br/>지정된 프로젝트?}
+    Check1 -- Yes --> Redir["SecondaryQueue로 토스"]
+    Check1 -- No --> Check2{Redis S3 Slowdown<br/>플래그 ON?}
+    Check2 -- Yes --> Redir
+    Check2 -- No --> Process[정상 처리 계속]
+```
+
 ```typescript
 const shouldRedirectSlowdown = await hasS3SlowdownFlag(projectId);
 if (enableRedirectToSecondaryQueue && (shouldRedirectEnv || shouldRedirectSlowdown)) {
   const secondaryQueue = SecondaryIngestionQueue.getInstance({ shardingKey });
   await secondaryQueue.add(QueueName.IngestionSecondaryQueue, job.data);
-  return;
+  return;  // ← 메인 워커에서 즉시 이탈
 }
 ```
-- 앞서 `processEventBatch`에서 S3 Slowdown 에러가 마킹된 프로젝트(`shouldRedirectSlowdown === true`)의 잡이라면, 이 워커가 실행되자마자 스스로를 멈추고 **우선순위가 낮은 `SecondaryIngestionQueue`로 잡을 다시 밀어 넣습니다**.
-- 이 구조 덕분에 소수의 프로젝트가 과도한 트래픽을 일으키더라도 다른 정상 프로젝트의 Ingestion은 지연 없이 처리될 수 있습니다(Noisy Neighbor 문제 완벽 방지).
 
-### C. 병렬 S3 다운로드
+> **Noisy Neighbor 방지**: 한 프로젝트가 초당 수만 건의 이벤트를 쏟아내더라도, 그 프로젝트만 별도의 느린 큐로 격리되어 다른 프로젝트의 처리 속도에 영향을 주지 않습니다.
+
+---
+
+### 3단계: S3 파일 다운로드 — `ingestionQueue.ts` L149-206
+
+🔗 [`ingestionQueue.ts` L149](file:///Users/dhsshin/Documents/LLMOps/langfuse/worker/src/queues/ingestionQueue.ts#L149-L206)
+
+두 가지 경로(Path)가 존재합니다:
+
+| 경로 | 조건 | 동작 |
+|---|---|---|
+| **Direct Download** | `skipS3List === true` (OTel 이벤트 등) | 정확한 파일 경로로 바로 GET |
+| **List + Download** | 그 외 | `s3Client.listFiles(prefix)` → `chunk(files, S3_CONCURRENT_READS)` → 배치별 `Promise.all(download)` |
+
 ```typescript
 const S3_CONCURRENT_READS = env.LANGFUSE_S3_CONCURRENT_READS;
 const batches = chunk(eventFiles, S3_CONCURRENT_READS);
@@ -78,21 +122,165 @@ for (const batch of batches) {
   events.push(...batchEvents.flat());
 }
 ```
-- 이벤트 JSON 파일을 가져올 때, 파일 리스트를 `chunk()` 함수로 잘라 `LANGFUSE_S3_CONCURRENT_READS` 설정값(기본 10~50)만큼 한 번에 병렬로 다운로드(`Promise.all`)하여 I/O 대기 타임을 최소화합니다.
+
+> **성능 포인트**: `S3_CONCURRENT_READS` 값을 조절하여 S3 병렬 다운로드 수를 사내 네트워크 환경에 맞게 튜닝할 수 있습니다.
 
 ---
 
-## 2. 메모리 버퍼링 및 Batch Insert (`ClickhouseWriter.ts`)
+### 4단계: IngestionService.mergeAndWrite — 이벤트 병합의 핵심
 
-🔗 **Source File:** [`worker/src/services/ClickhouseWriter.ts`](file:///Users/dhsshin/Documents/LLMOps/langfuse/worker/src/services/ClickhouseWriter.ts)
+🔗 [`IngestionService/index.ts` L149](file:///Users/dhsshin/Documents/LLMOps/langfuse/worker/src/services/IngestionService/index.ts#L149-L195)
 
-S3에서 불러온 데이터는 즉시 쿼리되지 않고, 버퍼링 과정을 거쳐 ClickHouse의 성능을 극대화합니다.
-
-### `IngestionService.mergeAndWrite`와 `ClickhouseWriter.addToQueue`
 ```typescript
-// 내부적으로 addToQueue를 호출
-clickhouseWriter.addToQueue(TableName.Traces, traceData);
+public async mergeAndWrite(
+  eventType: IngestionEntityTypes,  // "trace" | "observation" | "score" | "dataset_run_item"
+  projectId: string,
+  eventBodyId: string,
+  createdAtTimestamp: Date,
+  events: IngestionEventType[],
+  forwardToEventsTable: boolean,
+): Promise<void> {
+  switch (eventType) {
+    case "trace":
+      return await this.processTraceEventList({ ... });
+    case "observation":
+      return await this.processObservationEventList({ ... });
+    case "score":
+      return await this.processScoreEventList({ ... });
+    case "dataset_run_item":
+      return await this.processDatasetRunItemEventList({ ... });
+  }
+}
 ```
-- **`addToQueue`의 진실**: 이 메서드는 직접 DB 커넥션을 열어 Insert하는 것이 아니라, 워커 Node.js 프로세스의 로컬 메모리 버퍼(Array)에 JS 객체를 밀어 넣는(Push) 단순한 동작입니다.
-- **자동 Flush 타이머**: 클래스 내부적으로 `setInterval` 루프가 돌면서, 주기적으로(예: 3초) 혹은 배열 크기가 `MAX_BUFFER_SIZE`에 도달하면 메모리에 있는 배열 전체를 꺼냅니다. 그 뒤 ClickHouse Node.js Client를 통해 1개의 쿼리로 압축하여 `INSERT INTO ... FORMAT JSONEachRow` 형태로 전송(Flush)합니다.
-- 사내 인프라를 직접 호스팅하는 경우, 이 버퍼 주기와 크기를 커스텀 튜닝(Env 변수 조정)하여 ClickHouse 서버가 받는 Write 부하를 유연하게 조절할 수 있습니다.
+
+```mermaid
+flowchart TD
+    MW["mergeAndWrite(eventType)"] --> Switch{eventType?}
+    Switch -- trace --> PT["processTraceEventList"]
+    Switch -- observation --> PO["processObservationEventList"]
+    Switch -- score --> PS["processScoreEventList"]
+    Switch -- dataset_run_item --> PD["processDatasetRunItemEventList"]
+
+    PT --> Lookup["ClickHouse에서 기존 레코드 조회<br/>(getClickhouseRecord)"]
+    Lookup --> Merge["기존 + 신규 이벤트 병합<br/>(overwriteObject)"]
+    Merge --> Enrich["모델/프롬프트 Lookup<br/>토큰 수 계산 · 비용 산정"]
+    Enrich --> Write["ClickhouseWriter.addToQueue()"]
+    Write --> Eval["TraceUpsertQueue에<br/>평가(Eval) Job 추가"]
+```
+
+각 `processXxxEventList` 메서드의 핵심은:
+1. ClickHouse에서 **동일 ID의 기존 레코드**를 읽어와서 (`getClickhouseRecord`)
+2. 시간순으로 정렬된 새 이벤트 배열과 **병합**하고 (`mergeTraceRecords` 등)
+3. `ClickhouseWriter.addToQueue`로 메모리 버퍼에 추가합니다.
+
+---
+
+### 5단계: ClickhouseWriter — 메모리 버퍼링 + Batch Flush
+
+🔗 [`ClickhouseWriter/index.ts` L32](file:///Users/dhsshin/Documents/LLMOps/langfuse/worker/src/services/ClickhouseWriter/index.ts#L32-L96)
+
+```mermaid
+classDiagram
+    class ClickhouseWriter {
+        -batchSize: number
+        -writeInterval: number
+        -maxAttempts: number
+        -queue: ClickhouseQueue
+        -intervalId: NodeJS.Timeout
+        +getInstance(): ClickhouseWriter
+        +addToQueue(tableName, data): void
+        +shutdown(): Promise~void~
+        -start(): void
+        -flush(tableName): Promise~void~
+        -flushAll(): Promise~void~
+        -writeToClickhouse(params): Promise~void~
+    }
+    class ClickhouseQueue {
+        traces: QueueItem[]
+        traces_null: QueueItem[]
+        scores: QueueItem[]
+        observations: QueueItem[]
+        observations_batch_staging: QueueItem[]
+        blob_storage_file_log: QueueItem[]
+        dataset_run_items_rmt: QueueItem[]
+        events_full: QueueItem[]
+    }
+    ClickhouseWriter --> ClickhouseQueue
+```
+
+#### `addToQueue()` — L548-566
+
+```typescript
+public addToQueue<T extends TableName>(tableName: T, data: RecordInsertType<T>) {
+  const entityQueue = this.queue[tableName];
+  entityQueue.push({
+    createdAt: Date.now(),
+    attempts: 1,
+    data,
+  });
+
+  if (entityQueue.length >= this.batchSize) {
+    this.flush(tableName);  // ← 즉시 Flush 트리거
+  }
+}
+```
+
+#### `flush()` — L356-546 (에러 복구 전략)
+
+```mermaid
+flowchart TD
+    F["flush(tableName)"] --> Splice["queue에서 batchSize만큼<br/>splice(0, batchSize)"]
+    Splice --> Clamp["Decimal64 오버플로<br/>클램핑 (clampDecimal64Fields)"]
+    Clamp --> BackOff["backOff() 호출<br/>(exponential-backoff 라이브러리)"]
+
+    BackOff --> Write["writeToClickhouse()<br/>INSERT INTO ... FORMAT JSONEachRow"]
+    Write --> Success[성공 → 메트릭 기록]
+
+    Write -- socket hang up --> Retry["재시도 (isRetryableError)"]
+    Write -- extremely large --> Truncate["input/output 필드 1MB로<br/>잘라내기 (truncateOversizedRecord)"]
+    Write -- invalid string length --> Split["배치를 절반으로 분할<br/>(handleStringLengthError)"]
+
+    Retry --> BackOff
+    Truncate --> BackOff
+    Split --> BackOff
+
+    BackOff -- maxAttempts 초과 --> Drop["레코드 폐기 + 메트릭<br/>(rows_dropped)"]
+```
+
+| 에러 유형 | 복구 전략 | 코드 위치 |
+|---|---|---|
+| `socket hang up` | 지수 백오프 후 재시도 | L402-414 |
+| `size of JSON object extremely large` | `input`/`output`/`metadata` 필드를 1MB로 잘라낸 뒤 재시도 | L446-466 |
+| `invalid string length` (V8 문자열 제한) | 배치를 절반으로 나누고 나머지를 큐 앞쪽에 다시 넣음 | L415-445 |
+| 모든 재시도 실패 | `maxAttempts` 초과 시 레코드 폐기 + `rows_dropped` 메트릭 | L508-544 |
+
+---
+
+### WorkerManager — 워커 등록 및 Observability
+
+🔗 [`workerManager.ts` L127](file:///Users/dhsshin/Documents/LLMOps/langfuse/worker/src/queues/workerManager.ts#L127-L186)
+
+```typescript
+public static register(
+  queueName: QueueName,
+  processor: Processor,
+  additionalOptions: Partial<WorkerOptions> = {},
+): void {
+  const worker = new Worker(
+    queueName,
+    WorkerManager.metricWrapper(processor, queueName),  // ← 메트릭 래핑
+    { connection: redisInstance, prefix: getQueuePrefix(queueName), ... }
+  );
+  // ...
+  worker.on("failed", (job, err) => { traceException(err); recordIncrement(metric + ".failed"); });
+  worker.on("error", (failedReason) => { traceException(failedReason); recordIncrement(metric + ".error"); });
+}
+```
+
+`metricWrapper`는 모든 Job 처리를 감싸서 **대기 시간(wait_time)**, **처리 시간(processing_time)**, **큐 깊이(queue_length)**, **DLQ 깊이(dlq_length)**, **활성 Job 수(active)** 를 자동으로 Datadog에 보고합니다.
+
+---
+
+## 다음 문서
+
+ClickHouse에 적재된 데이터가 대시보드 쿼리에서 어떻게 읽히는지는 👉 [12 Query Source Breakdown](./12-query-source-breakdown.md)에서 이어집니다.

@@ -4,101 +4,132 @@
 
 ## 목적
 
-이 문서 세트는 오픈소스 Langfuse를 사내 observability 플랫폼으로 도입 및 커스터마이징하기 위한 아키텍처 분석 및 설계 기준입니다.
+이 문서 세트는 오픈소스 Langfuse를 사내 observability 플랫폼으로 도입 및 커스터마이징하기 위한 **포괄적 소스코드 해부학(Anatomy)** 문서입니다.
 
-주요 분석 및 커스터마이징 포인트는 다음과 같습니다.
-- 오픈소스 Langfuse의 데이터 모델 및 아키텍처 상세 분석 (PostgreSQL, ClickHouse 역할 분담).
-- 사내 보안 요구사항에 맞춘 인증/인가 시스템 연동 (Custom Auth/SSO).
-- 내부 트래픽 비용 계산 및 사내 인프라(Redis, BullMQ)와의 안정적인 통합.
+SDK의 로그 한 줄이 대시보드에 표시되기까지 — API 인증, S3 캐싱, BullMQ 큐잉, 워커 병합, ClickHouse Batch Insert, tRPC 쿼리, React 렌더링 — 그 모든 경로를 소스코드 라인 레벨까지 추적하고 시각화합니다.
 
-## 핵심 결론
+## 전체 문서 구조
 
-| 주제 | 결론 |
-| --- | --- |
-| 아키텍처 | Next.js 웹 셸, tRPC 백엔드, BullMQ Worker로 구성된 모노레포 구조를 유지한다. |
-| 데이터 저장소 | 트랜잭션 데이터(User, Project, API Key)는 PostgreSQL, 분석형 와이드 이벤트 데이터(Traces, Observations, Scores)는 ClickHouse에 분리 저장한다. |
-| 와이드 이벤트 모델 | Observation을 분석의 기본 단위로 취급하며, Trace는 관련 Observation들을 묶는 상관관계 핸들(Correlation Handle)로 사용한다. |
-| 백그라운드 처리 | 외부 API 연동(예: 비용 청구, 배치 내보내기)과 대량 데이터 처리는 Worker(BullMQ)에서 비동기 처리하여 웹 API 레이턴시를 최소화한다. |
-| 인증 연동 | 기본 제공되는 NextAuth 기반 인증을 사내 SSO(OIDC/SAML)로 교체 및 연동해야 한다. |
-| 비용 청구 | 내부 모델의 고유 토큰 비용 계산 로직을 `worker/src/constants` 및 `packages/shared` 모델 가격 테이블에 확장 반영해야 한다. |
+```mermaid
+flowchart TD
+    R["📄 README<br/>(이 문서)"]
 
-## 구현 상태
+    subgraph Foundation["00 Foundation"]
+        F["01 Requirements & Scope"]
+    end
 
-2026-05-16 기준, 초기 아키텍처 문서화 작업이 진행 중입니다.
+    subgraph Architecture["10 Architecture"]
+        A["03 Architecture"]
+        SA["15 Source Code Architecture"]
+    end
 
-| 영역 | 상태 |
-| --- | --- |
-| 아키텍처 문서화 | 진행 중. 시스템 경계, 소스코드 아키텍처 분석 문서 작성 중 |
-| 도메인 모델 분석 | 대기 중. Prisma 및 ClickHouse 스키마 기반 데이터 모델 문서 작성 예정 |
-| 커스텀 연동 분석 | 대기 중. 사내 인증 및 비용 로직 연동 포인트 문서화 예정 |
+    subgraph Domain["20 Core Domain"]
+        DM["04 Data Model & Storage"]
+    end
 
-## 디렉토리 구조
+    subgraph Custom["30 Customization"]
+        CI["05 Internal Observability"]
+    end
 
-루트 `docs`에는 색인만 두고, 실제 문서는 책임 영역별 하위 디렉토리에 둡니다. 번호 prefix는 전체 읽기 순서를 유지하기 위한 것이며, 디렉토리명은 탐색 기준입니다.
+    subgraph Anatomy["40 Anatomy Deep Dive"]
+        IP["06 Ingestion Pipeline"]
+        QW["07 Queue & Worker System"]
+        CH["08 ClickHouse Schema & MVs"]
+        TR["09 tRPC & Next.js"]
+    end
 
-| 디렉토리 | 책임 |
-| --- | --- |
-| `00-foundation` | 시스템 커스터마이징 요구사항, 범위 정리 |
-| `10-architecture` | Langfuse 전체 시스템 경계, 모노레포 아키텍처, 패키지 간 의존성 |
-| `20-core-domain` | PostgreSQL, ClickHouse 스키마 및 와이드 이벤트 데이터 모델 분석 |
-| `30-customization` | 사내 플랫폼 통합을 위한 커스텀 인증, 비용 계산, 알림 등 연동 설계 |
-| `40-anatomy-deep-dive` | Langfuse 소스코드 레벨의 데이터 파이프라인, 워커 로직, ClickHouse MV 최적화 기법 심층 분석 |
-| `50-source-analysis` | 소스코드 레벨 구현체 (Zod 검증, BullMQ Processor, ClickHouse Query 바인딩 등) 세부 해부 |
-| `90-decisions` | 진행 중 아직 확정되지 않은 오픈된 정책 및 기술 결정 사항 추적 |
+    subgraph Source["50 Source Analysis"]
+        I_SRC["10 Ingestion Source"]
+        W_SRC["11 Worker Source"]
+        Q_SRC["12 Query Source"]
+        C_SRC["13 Customization Source"]
+    end
+
+    subgraph Decisions["90 Decisions"]
+        OD["11 Open Decisions"]
+    end
+
+    R --> F
+    F --> A
+    A --> SA
+    A --> DM
+
+    SA --> IP
+    IP --> QW
+    DM --> CH
+    SA --> TR
+
+    IP --> I_SRC
+    QW --> W_SRC
+    CH --> Q_SRC
+    TR --> Q_SRC
+
+    SA --> CI
+    DM --> CI
+    CI --> C_SRC
+    C_SRC --> OD
+```
 
 ## 빠른 읽기 경로
 
 | 독자 | 읽는 순서 | 목적 |
 | --- | --- | --- |
-| 시스템 아키텍트 | 01 -> 03 -> 15 -> 04 -> 06 | 도입 요구사항, 전체 아키텍처, 소스 구조, 데이터 모델 및 수집 파이프라인 파악 |
-| 백엔드 엔지니어 | 03 -> 15 -> 06 -> 07 -> 10 -> 11 -> 12 | 모노레포 빌드, 워커 시스템 및 Ingestion/Worker의 소스코드 구현체 딥다이브 |
-| 프론트엔드/커스텀 | 05 -> 09 -> 13 | 커스텀 인증 연동, tRPC 라우팅 구조 및 가격 정책 모델(Pricing) 소스코드 분석 |
-| 데이터 엔지니어 | 04 -> 08 -> 12 | 와이드 이벤트 모델, ClickHouse 데이터 수집 및 뷰 롤업 최적화, SQL 바인딩 파악 |
-| 인프라/보안 담당자 | 03 -> 05 -> 11 | DB/캐시 인프라 구조 확인, 사내 SSO 연동 및 보안 미결정 사항 점검 |
+| 시스템 아키텍트 | 01 → 03 → 15 → 04 → 06 → 07 | 요구사항, 전체 아키텍처, 소스 구조, 데이터 모델, 수집/처리 파이프라인 전체 파악 |
+| 백엔드 엔지니어 | 03 → 15 → 06 → 07 → 10 → 11 → 12 | 모노레포 구조, Ingestion/Worker 소스코드 구현체 라인 바이 라인 딥다이브 |
+| 프론트엔드/커스텀 | 05 → 09 → 13 | 커스텀 인증(SSO) 연동, tRPC 라우팅 구조, 모델 가격 정책 수정 위치 파악 |
+| 데이터 엔지니어 | 04 → 08 → 12 | 와이드 이벤트 모델, ClickHouse AMT/MV 롤업 최적화, SQL 바인딩 분석 |
+| 인프라/보안 담당자 | 03 → 05 → 11 → 13 | 인프라 토폴로지, SSO 연동 주의사항, 오픈 결정 사항 점검 |
 
-## 전체 문서 흐름
+## 전체 문서 목록
 
-```mermaid
-flowchart TD
-  R[README] --> F[01 Requirements and Scope]
-  F --> A[03 Architecture]
-  A --> SA[15 Source Code Architecture]
-  A --> DM[04 Data Model and Storage]
-  
-  SA --> IP[06 Ingestion Pipeline]
-  IP --> QW[07 Queue and Worker System]
-  DM --> CH[08 ClickHouse Schema & MVs]
-  SA --> TR[09 tRPC and Next.js]
-  
-  IP --> I_SRC[10 Ingestion Source Breakdown]
-  QW --> W_SRC[11 Worker Source Breakdown]
-  CH --> C_SRC[12 Query Source Breakdown]
-  TR --> C_SRC
-  
-  SA --> CI[05 Internal Observability Customization]
-  DM --> CI
-  CI --> CU_SRC[13 Customization Source Breakdown]
-  CU_SRC --> OD[11 Open Decisions]
-```
+### 00 Foundation
 
-## 문서별 책임
-
-| 문서 | 책임 |
+| 문서 | 핵심 내용 |
 | --- | --- |
 | [01 Requirements and Scope](00-foundation/01-requirements-and-scope.md) | 도입 목적, 커스터마이징 핵심 요구사항(인증, 모델 추가), non-goals 정리 |
-| [03 Architecture](10-architecture/03-architecture.md) | Langfuse 전체 시스템 컴포넌트(Web, Worker, Shared) 및 트래픽/데이터 플로우 시퀀스 |
-| [15 Source Code Architecture](10-architecture/15-source-code-architecture.md) | Turborepo, Next.js, tRPC, BullMQ 기반 소스코드 디렉토리 레이아웃 및 의존성 규칙 정의 |
-| [04 Data Model and Storage](20-core-domain/04-data-model-and-storage.md) | Prisma(PostgreSQL) 릴레이셔널 모델과 ClickHouse 분석 이벤트 모델의 분담 |
-| [05 Internal Observability Customization](30-customization/05-internal-observability.md) | 사내 SSO 통합, 커스텀 LLM 가격 산정 방식 추가 등 사내 전용 연동 전략 |
-| [06 Ingestion Pipeline](40-anatomy-deep-dive/06-ingestion-pipeline.md) | API 요청부터 S3 업로드, 큐 전달, 워커 배치 인서트에 이르는 데이터 수집 파이프라인 코드 해부 |
-| [07 Queue and Worker System](40-anatomy-deep-dive/07-queue-and-worker-system.md) | BullMQ 기반의 작업 큐, Worker 로직, 에러 복구(Retry Baggage) 메커니즘 분석 |
-| [08 ClickHouse Schema & MVs](40-anatomy-deep-dive/08-clickhouse-schema-and-mvs.md) | 실시간 분석을 위한 ClickHouse AggregatingMergeTree와 Materialized View 롤업 최적화 해부 |
-| [09 tRPC and Next.js](40-anatomy-deep-dive/09-trpc-and-nextjs.md) | Next.js API Routes와 tRPC의 라우터 처리, 병렬 데이터 패칭 구조 해부 |
-| [10 Ingestion Source](50-source-analysis/10-ingestion-source-breakdown.md) | `processEventBatch.ts`, S3 Slowdown 에러 폴백 등 수집 단계의 소스코드 라인 바이 라인 분해 |
-| [11 Worker Source](50-source-analysis/11-worker-source-breakdown.md) | `ingestionQueue.ts` 워커의 Redis 중복 캐싱 및 ClickHouse 배치 인서트 로직 소스코드 분석 |
-| [12 Query Source](50-source-analysis/12-query-source-breakdown.md) | ClickHouse AMT 뷰 생성 SQL(`0023...`)과 tRPC 리졸버의 쿼리 바인딩 로직 소스코드 분석 |
-| [13 Customization Source](50-source-analysis/13-customization-source-breakdown.md) | 커스텀 LLM 토크나이저 및 가격 추가를 위한 `types.ts`, `default-model-prices.json` 수정 위치 분석 |
-| [11 Open Decisions](90-decisions/11-open-decisions.md) | 인프라 배포 옵션, 데이터 보존 기간(Retention) 등 오픈 결정을 추적 |
+
+### 10 Architecture
+
+| 문서 | 핵심 내용 |
+| --- | --- |
+| [03 Architecture](10-architecture/03-architecture.md) | 전체 시스템 컴포넌트(Web, Worker, Shared) 및 트래픽/데이터 플로우 시퀀스 |
+| [15 Source Code Architecture](10-architecture/15-source-code-architecture.md) | 모노레포 디렉토리 레이아웃, 패키지 의존성 규칙, 빌드/검증 스크립트 |
+
+### 20 Core Domain
+
+| 문서 | 핵심 내용 |
+| --- | --- |
+| [04 Data Model and Storage](20-core-domain/04-data-model-and-storage.md) | PostgreSQL(릴레이셔널) + ClickHouse(분석) 이중 저장소 역할 분담 |
+
+### 30 Customization
+
+| 문서 | 핵심 내용 |
+| --- | --- |
+| [05 Internal Observability Customization](30-customization/05-internal-observability.md) | 사내 SSO 통합 설계, 커스텀 LLM 가격 산정 전략 |
+
+### 40 Anatomy Deep Dive — 소스 아키텍처 심층 해부
+
+| 문서 | 핵심 내용 | 주요 다이어그램 |
+| --- | --- | --- |
+| [06 Ingestion Pipeline](40-anatomy-deep-dive/06-ingestion-pipeline.md) | API → S3 → BullMQ → Worker → ClickHouse 3단계 비동기 파이프라인 | 시퀀스 다이어그램 |
+| [07 Queue and Worker System](40-anatomy-deep-dive/07-queue-and-worker-system.md) | BullMQ 큐 토폴로지, WorkerManager, Retry Baggage, DLQ | 토폴로지 차트 + 클래스 다이어그램 |
+| [08 ClickHouse Schema & MVs](40-anatomy-deep-dive/08-clickhouse-schema-and-mvs.md) | Null → MV → AMT 트리거 패턴, sumMap/argMax 집계 | 테이블 계층 플로우차트 |
+| [09 tRPC and Next.js](40-anatomy-deep-dive/09-trpc-and-nextjs.md) | 미들웨어 체인, 병렬 쿼리 패턴, Parameter Binding 보안 | 미들웨어 체인 + 시퀀스 다이어그램 |
+
+### 50 Source Analysis — 소스코드 라인 바이 라인 분석
+
+| 문서 | 핵심 내용 | 분석 대상 파일 |
+| --- | --- | --- |
+| [10 Ingestion Source](50-source-analysis/10-ingestion-source-breakdown.md) | Zod 검증, S3 SlowDown 에러 폴백, Sampling, Delay 전략 | `ingestion.ts`, `processEventBatch.ts` |
+| [11 Worker Source](50-source-analysis/11-worker-source-breakdown.md) | Redis 중복 캐싱, Secondary Queue, ClickhouseWriter flush | `ingestionQueue.ts`, `ClickhouseWriter/index.ts`, `IngestionService/index.ts` |
+| [12 Query Source](50-source-analysis/12-query-source-breakdown.md) | AMT SQL 함수 해부, tRPC Router 전체 프로시저 맵 | `0023...sql`, `traces.ts` |
+| [13 Customization Source](50-source-analysis/13-customization-source-breakdown.md) | 가격 매칭 흐름, SSO 자동 프로비저닝 State Diagram | `default-model-prices.json`, `authOptions.ts` |
+
+### 90 Decisions
+
+| 문서 | 핵심 내용 |
+| --- | --- |
+| [11 Open Decisions](90-decisions/11-open-decisions.md) | 배포 아키텍처, 데이터 보존(Retention), 비용 정밀도 미결정 사항 |
 
 ## 문서 작성 규칙
 
@@ -107,4 +138,6 @@ flowchart TD
 | 한국어 우선 | 설명 문장은 한국어를 기본으로 한다. |
 | 기술 식별자 유지 | API path, header, field, file path, 패키지 이름, 주요 도메인 객체 이름(Trace, Observation 등)은 원문을 유지한다. |
 | Mermaid 사용 | 구조도, flowchart, sequence는 모두 Mermaid로 작성한다. ASCII art chart는 사용하지 않는다. |
+| 소스코드 링크 | 분석 대상 소스 파일은 `file:///` 절대 경로 링크로 연결하여 IDE에서 바로 열 수 있게 한다. |
+| 다이어그램 특수문자 | Mermaid 노드 이름에 `@`, `/` 등 특수문자가 있으면 반드시 따옴표(`""`)로 감싼다. |
 | 원본 존중 | Langfuse의 기본 아키텍처 사상(Wide Event 등)을 그대로 반영하며, 커스텀 영역을 명확히 분리하여 기재한다. |
