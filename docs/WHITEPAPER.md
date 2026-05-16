@@ -16,53 +16,67 @@ SDK의 `langfuse.trace()` 한 줄이 대시보드의 차트로 렌더링되기�
 
 ## 목차
 
+### Volume 1: Core Infrastructure (핵심 인프라)
 | Ch. | 제목 | 핵심 질문 |
 |---|---|---|
 | **1** | [설계 철학과 첫 번째 원칙](./whitepaper/ch01-design-philosophy.md) | 왜 Wide Event인가? 왜 ClickHouse인가? |
 | **2** | [시스템 토폴로지와 의존성 경계](./whitepaper/ch02-system-topology.md) | 모노레포의 4개 패키지는 어떤 계약으로 연결되는가? |
-| **3** | [수집 파이프라인: 가용성을 위한 설계](./whitepaper/ch03-ingestion-pipeline.md) | Fail-open, S3 SlowDown 방어, 샘플링 — 데이터 유실과 가용성 사이의 트레이드오프 |
-| **4** | [워커와 이벤트 병합: 최종 일관성의 구현](./whitepaper/ch04-worker-and-merge.md) | Create/Update 순서 보장, Immutable Key, Decimal64 클램핑 |
-| **5** | [ClickHouse 데이터 엔지니어링](./whitepaper/ch05-clickhouse-engineering.md) | Null Engine 트리거, AMT 집계함수, TTL 기반 쿼리 라우팅 |
-| **6** | [쿼리 경로와 타입 안전성](./whitepaper/ch06-query-path.md) | tRPC 미들웨어 체인, 병렬 쿼리, Parameter Binding 보안 |
-| **7** | [인증 아키텍처와 사내 SSO 연동](./whitepaper/ch07-authentication.md) | 16개 Provider, 자동 프로비저닝, Keycloak 호환성 패치 |
-| **8** | [비용 산정 엔진](./whitepaper/ch08-cost-engine.md) | 모델 매칭, 토크나이저 폴백, SDK 제공 비용 우선 규칙 |
-| **9** | [운영 가이드와 튜닝](./whitepaper/ch09-operations.md) | 환경변수 전체 맵, 수평 확장, 모니터링 메트릭 |
-| **10** | [사내 도입 미결 결정 및 로드맵](./whitepaper/ch10-open-decisions-and-roadmap.md) | ClickHouse 클러스터링, Chargeback, Retention, RBAC |
+| **3** | [수집 파이프라인: 가용성을 위한 설계](./whitepaper/ch03-ingestion-pipeline.md) | 데이터 유실과 가용성 사이의 트레이드오프 |
+| **4** | [워커와 이벤트 병합: 최종 일관성의 구현](./whitepaper/ch04-worker-and-merge.md) | Create/Update 순서 보장, Immutable Key |
+| **5** | [ClickHouse 데이터 엔지니어링](./whitepaper/ch05-clickhouse-engineering.md) | AMT 집계함수, TTL 기반 쿼리 라우팅 |
+| **6** | [쿼리 경로와 타입 안전성](./whitepaper/ch06-query-path.md) | tRPC 미들웨어 체인, Parameter Binding 보안 |
+| **7** | [인증 아키텍처와 사내 SSO 연동](./whitepaper/ch07-authentication.md) | 16개 Provider, 자동 프로비저닝 |
+| **8** | [비용 산정 엔진](./whitepaper/ch08-cost-engine.md) | 모델 매칭, 토크나이저 폴백 전략 |
+| **9** | [운영 가이드와 튜닝](./whitepaper/ch09-operations.md) | 환경변수 전체 맵, 수평 확장 전략 |
+| **10** | [사내 도입 미결 결정 및 로드맵](./whitepaper/ch10-open-decisions-and-roadmap.md) | 클러스터링, Chargeback, Retention |
+
+### Volume 2: Advanced LLMOps Architecture (심화 아키텍처)
+| Ch. | 제목 | 핵심 질문 |
+|---|---|---|
+| **11** | [LLM-as-a-Judge와 비동기 평가 워커](./whitepaper/ch11-evaluations.md) | Rate Limit 에러 복구와 무한 루프 방지 로직 |
+| **12** | [프롬프트 레지스트리와 이벤트 소싱](./whitepaper/ch12-prompt-management.md) | 레이블 기반 런타임 스위칭과 감사 로그 |
+| **13** | [OTEL 연동과 데이터 마스킹 (EE)](./whitepaper/ch13-otel-and-masking.md) | OTLP 매핑 원리와 Fail-closed 보안 파이프라인 |
 
 ---
 
 ## 이 백서의 읽는 법
 
 ```mermaid
-flowchart LR
+flowchart TD
     subgraph Executive["경영진 / 아키텍트"]
         E1["Ch.1 설계 철학"]
         E2["Ch.2 토폴로지"]
     end
 
-    subgraph Backend["백엔드 엔지니어"]
+    subgraph Backend["백엔드 / 인프라"]
         B1["Ch.3 수집 파이프라인"]
         B2["Ch.4 워커 & 병합"]
         B3["Ch.5 ClickHouse"]
+        O1["Ch.9 운영 가이드"]
+        O2["Ch.10 도입 로드맵"]
     end
 
-    subgraph Frontend["프론트엔드 / 커스텀"]
+    subgraph LLMOps["LLMOps / AI 엔지니어"]
+        L1["Ch.11 평가 워커"]
+        L2["Ch.12 프롬프트 관리"]
+        L3["Ch.13 OTEL & 마스킹"]
+    end
+
+    subgraph AppDev["앱 개발자 / 커스텀"]
         F1["Ch.6 쿼리 경로"]
         F2["Ch.7 인증"]
         F3["Ch.8 비용 엔진"]
     end
 
-    subgraph Ops["인프라 / SRE"]
-        O1["Ch.9 운영 가이드"]
-        O2["Ch.10 도입 로드맵"]
-    end
-
-    E1 --> E2 --> B1
-    B1 --> B2 --> B3 --> F1
+    E1 --> E2
+    E2 --> B1
     E2 --> F2
+    B1 --> B2 --> B3 --> F1
+    B3 --> O1 --> O2
     F1 --> F3
-    B3 --> O1
-    O1 --> O2
+    B2 --> L1
+    F3 --> L2
+    B1 --> L3
 ```
 
 **모든 챕터는 동일한 구조를 따른다:**
@@ -88,3 +102,4 @@ flowchart LR
 | Ch.6 | [09 tRPC & Next.js](40-anatomy-deep-dive/09-trpc-and-nextjs.md) |
 | Ch.7-8 | [05 Customization](30-customization/05-internal-observability.md), [13 Customization Source](50-source-analysis/13-customization-source-breakdown.md) |
 | Ch.10 | [11 Open Decisions](90-decisions/11-open-decisions.md) |
+| Ch.11-13 | [13 Customization Source](50-source-analysis/13-customization-source-breakdown.md) |
