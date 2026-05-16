@@ -27,6 +27,7 @@ SDK의 `langfuse.trace()` 한 줄이 대시보드의 차트로 렌더링되기�
 | **7** | [인증 아키텍처와 사내 SSO 연동](./whitepaper/ch07-authentication.md) | 16개 Provider, 자동 프로비저닝, Keycloak 호환성 패치 |
 | **8** | [비용 산정 엔진](./whitepaper/ch08-cost-engine.md) | 모델 매칭, 토크나이저 폴백, SDK 제공 비용 우선 규칙 |
 | **9** | [운영 가이드와 튜닝](./whitepaper/ch09-operations.md) | 환경변수 전체 맵, 수평 확장, 모니터링 메트릭 |
+| **10** | [사내 도입 미결 결정 및 로드맵](./whitepaper/ch10-open-decisions-and-roadmap.md) | ClickHouse 클러스터링, Chargeback, Retention, RBAC |
 
 ---
 
@@ -53,6 +54,7 @@ flowchart LR
 
     subgraph Ops["인프라 / SRE"]
         O1["Ch.9 운영 가이드"]
+        O2["Ch.10 도입 로드맵"]
     end
 
     E1 --> E2 --> B1
@@ -60,6 +62,7 @@ flowchart LR
     E2 --> F2
     F1 --> F3
     B3 --> O1
+    O1 --> O2
 ```
 
 **모든 챕터는 동일한 구조를 따른다:**
@@ -84,3 +87,4 @@ flowchart LR
 | Ch.5 | [08 ClickHouse Schema](40-anatomy-deep-dive/08-clickhouse-schema-and-mvs.md), [12 Query Source](50-source-analysis/12-query-source-breakdown.md) |
 | Ch.6 | [09 tRPC & Next.js](40-anatomy-deep-dive/09-trpc-and-nextjs.md) |
 | Ch.7-8 | [05 Customization](30-customization/05-internal-observability.md), [13 Customization Source](50-source-analysis/13-customization-source-breakdown.md) |
+| Ch.10 | [11 Open Decisions](90-decisions/11-open-decisions.md) |
