@@ -40,8 +40,8 @@ langfuse/
 
 ```mermaid
 flowchart TD
-    W[web] --> EE[@langfuse/ee]
-    W --> S[@langfuse/shared]
+    W[web] --> EE["@langfuse/ee"]
+    W --> S["@langfuse/shared"]
     EE --> S
     WK[worker] --> S
 ```
