@@ -37,6 +37,14 @@ SDK의 `langfuse.trace()` 한 줄이 대시보드의 차트로 렌더링되기�
 | **12** | [프롬프트 레지스트리와 이벤트 소싱](./whitepaper/ch12-prompt-management.md) | 레이블 기반 런타임 스위칭과 감사 로그 |
 | **13** | [OTEL 연동과 데이터 마스킹 (EE)](./whitepaper/ch13-otel-and-masking.md) | OTLP 매핑 원리와 Fail-closed 보안 파이프라인 |
 
+### Volume 3: Enterprise Operations & Ecosystem (운영 및 생태계)
+| Ch. | 제목 | 핵심 질문 |
+|---|---|---|
+| **14** | [데이터셋 관리와 파인튜닝 파이프라인](./whitepaper/ch14-datasets-and-fine-tuning.md) | 트레이스 승격과 고성능 데이터 추출 아키텍처 |
+| **15** | [엔터프라이즈 권한 및 RBAC](./whitepaper/ch15-rbac-and-security.md) | Scope 기반 권한 강제와 사내 보안 격리 모델 |
+| **16** | [실시간 자동화와 외부 연동](./whitepaper/ch16-automations-and-webhooks.md) | 웹훅 전송 보안과 지능형 회로 차단 엔진 |
+| **17** | [클라이언트 SDK 내부 설계](./whitepaper/ch17-sdk-internal-architecture.md) | 비동기 배칭과 Fail-open 가용성 철학 |
+
 ---
 
 ## 이 백서의 읽는 법
@@ -60,12 +68,19 @@ flowchart TD
         L1["Ch.11 평가 워커"]
         L2["Ch.12 프롬프트 관리"]
         L3["Ch.13 OTEL & 마스킹"]
+        V3_1["Ch.14 데이터셋 & 파인튜닝"]
     end
 
     subgraph AppDev["앱 개발자 / 커스텀"]
         F1["Ch.6 쿼리 경로"]
         F2["Ch.7 인증"]
         F3["Ch.8 비용 엔진"]
+        V3_4["Ch.17 SDK 내부 설계"]
+    end
+
+    subgraph Security["보안 / 운영팀"]
+        S1["Ch.15 RBAC & 보안"]
+        S2["Ch.16 자동화 & 웹훅"]
     end
 
     E1 --> E2
@@ -77,6 +92,10 @@ flowchart TD
     B2 --> L1
     F3 --> L2
     B1 --> L3
+    L1 --> V3_1
+    F2 --> S1
+    L2 --> S2
+    F1 --> V3_4
 ```
 
 **모든 챕터는 동일한 구조를 따른다:**
@@ -102,4 +121,4 @@ flowchart TD
 | Ch.6 | [09 tRPC & Next.js](40-anatomy-deep-dive/09-trpc-and-nextjs.md) |
 | Ch.7-8 | [05 Customization](30-customization/05-internal-observability.md), [13 Customization Source](50-source-analysis/13-customization-source-breakdown.md) |
 | Ch.10 | [11 Open Decisions](90-decisions/11-open-decisions.md) |
-| Ch.11-13 | [13 Customization Source](50-source-analysis/13-customization-source-breakdown.md) |
+| Ch.11-17 | [13 Customization Source](50-source-analysis/13-customization-source-breakdown.md) |
