@@ -43,6 +43,7 @@
 | `20-core-domain` | PostgreSQL, ClickHouse 스키마 및 와이드 이벤트 데이터 모델 분석 |
 | `30-customization` | 사내 플랫폼 통합을 위한 커스텀 인증, 비용 계산, 알림 등 연동 설계 |
 | `40-anatomy-deep-dive` | Langfuse 소스코드 레벨의 데이터 파이프라인, 워커 로직, ClickHouse MV 최적화 기법 심층 분석 |
+| `50-source-analysis` | 소스코드 레벨 구현체 (Zod 검증, BullMQ Processor, ClickHouse Query 바인딩 등) 세부 해부 |
 | `90-decisions` | 진행 중 아직 확정되지 않은 오픈된 정책 및 기술 결정 사항 추적 |
 
 ## 빠른 읽기 경로
@@ -50,8 +51,9 @@
 | 독자 | 읽는 순서 | 목적 |
 | --- | --- | --- |
 | 시스템 아키텍트 | 01 -> 03 -> 15 -> 04 -> 06 | 도입 요구사항, 전체 아키텍처, 소스 구조, 데이터 모델 및 수집 파이프라인 파악 |
-| 백엔드 엔지니어 | 03 -> 15 -> 04 -> 05 -> 07 -> 09 | 모노레포 빌드, 데이터 모델, 커스텀 구현 포인트, 워커 시스템 및 tRPC 라우팅 구조 확인 |
-| 데이터 엔지니어 | 03 -> 04 -> 06 -> 08 | 와이드 이벤트 모델, ClickHouse 데이터 수집 및 뷰 롤업 최적화 파악 |
+| 백엔드 엔지니어 | 03 -> 15 -> 06 -> 07 -> 10 -> 11 -> 12 | 모노레포 빌드, 워커 시스템 및 Ingestion/Worker의 소스코드 구현체 딥다이브 |
+| 프론트엔드/커스텀 | 05 -> 09 -> 13 | 커스텀 인증 연동, tRPC 라우팅 구조 및 가격 정책 모델(Pricing) 소스코드 분석 |
+| 데이터 엔지니어 | 04 -> 08 -> 12 | 와이드 이벤트 모델, ClickHouse 데이터 수집 및 뷰 롤업 최적화, SQL 바인딩 파악 |
 | 인프라/보안 담당자 | 03 -> 05 -> 11 | DB/캐시 인프라 구조 확인, 사내 SSO 연동 및 보안 미결정 사항 점검 |
 
 ## 전체 문서 흐름
@@ -68,9 +70,15 @@ flowchart TD
   DM --> CH[08 ClickHouse Schema & MVs]
   SA --> TR[09 tRPC and Next.js]
   
+  IP --> I_SRC[10 Ingestion Source Breakdown]
+  QW --> W_SRC[11 Worker Source Breakdown]
+  CH --> C_SRC[12 Query Source Breakdown]
+  TR --> C_SRC
+  
   SA --> CI[05 Internal Observability Customization]
   DM --> CI
-  CI --> OD[11 Open Decisions]
+  CI --> CU_SRC[13 Customization Source Breakdown]
+  CU_SRC --> OD[11 Open Decisions]
 ```
 
 ## 문서별 책임
@@ -86,6 +94,10 @@ flowchart TD
 | [07 Queue and Worker System](40-anatomy-deep-dive/07-queue-and-worker-system.md) | BullMQ 기반의 작업 큐, Worker 로직, 에러 복구(Retry Baggage) 메커니즘 분석 |
 | [08 ClickHouse Schema & MVs](40-anatomy-deep-dive/08-clickhouse-schema-and-mvs.md) | 실시간 분석을 위한 ClickHouse AggregatingMergeTree와 Materialized View 롤업 최적화 해부 |
 | [09 tRPC and Next.js](40-anatomy-deep-dive/09-trpc-and-nextjs.md) | Next.js API Routes와 tRPC의 라우터 처리, 병렬 데이터 패칭 구조 해부 |
+| [10 Ingestion Source](50-source-analysis/10-ingestion-source-breakdown.md) | `processEventBatch.ts`, S3 Slowdown 에러 폴백 등 수집 단계의 소스코드 라인 바이 라인 분해 |
+| [11 Worker Source](50-source-analysis/11-worker-source-breakdown.md) | `ingestionQueue.ts` 워커의 Redis 중복 캐싱 및 ClickHouse 배치 인서트 로직 소스코드 분석 |
+| [12 Query Source](50-source-analysis/12-query-source-breakdown.md) | ClickHouse AMT 뷰 생성 SQL(`0023...`)과 tRPC 리졸버의 쿼리 바인딩 로직 소스코드 분석 |
+| [13 Customization Source](50-source-analysis/13-customization-source-breakdown.md) | 커스텀 LLM 토크나이저 및 가격 추가를 위한 `types.ts`, `default-model-prices.json` 수정 위치 분석 |
 | [11 Open Decisions](90-decisions/11-open-decisions.md) | 인프라 배포 옵션, 데이터 보존 기간(Retention) 등 오픈 결정을 추적 |
 
 ## 문서 작성 규칙
