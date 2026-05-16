@@ -1,235 +1,349 @@
 # 12 Query Source Breakdown
 
 > **선행 문서**: [08 ClickHouse Schema & MVs](../40-anatomy-deep-dive/08-clickhouse-schema-and-mvs.md) · [09 tRPC and Next.js](../40-anatomy-deep-dive/09-trpc-and-nextjs.md)
+>
 > **분석 대상 소스**:
-> - [`packages/shared/clickhouse/migrations/unclustered/0023_traces_aggregating_merge_trees.up.sql`](file:///Users/dhsshin/Documents/LLMOps/langfuse/packages/shared/clickhouse/migrations/unclustered/0023_traces_aggregating_merge_trees.up.sql) — ClickHouse AMT 스키마
-> - [`web/src/server/api/routers/traces.ts`](file:///Users/dhsshin/Documents/LLMOps/langfuse/web/src/server/api/routers/traces.ts) — tRPC 라우터 (665줄)
+> | 파일 | 줄 수 | 역할 |
+> |---|---|---|
+> | [`packages/shared/clickhouse/migrations/unclustered/0023_traces_aggregating_merge_trees.up.sql`](file:///Users/dhsshin/Documents/LLMOps/langfuse/packages/shared/clickhouse/migrations/unclustered/0023_traces_aggregating_merge_trees.up.sql) | — | ClickHouse AMT 스키마 정의 |
+> | [`web/src/server/api/routers/traces.ts`](file:///Users/dhsshin/Documents/LLMOps/langfuse/web/src/server/api/routers/traces.ts) | 665 | tRPC 라우터 (대시보드 쿼리 전체) |
+> | [`worker/src/services/IngestionService/index.ts`](file:///Users/dhsshin/Documents/LLMOps/langfuse/worker/src/services/IngestionService/index.ts) | 1736 | 이벤트 병합 로직 (데이터가 적재되는 방식 이해 필수) |
 
 ---
 
-## ClickHouse 뷰 파이프라인 전체 구조
-
-워커가 `traces` 테이블에 Insert한 데이터가 MV를 통해 TTL별 AMT로 분기되고, 프론트엔드가 읽어가는 전체 흐름입니다.
+## ClickHouse 데이터 흐름 전체 구조
 
 ```mermaid
 flowchart LR
-    subgraph Worker["Worker (ClickhouseWriter)"]
-        CW["addToQueue(Traces)"] --> TT["traces 테이블<br/>(ReplacingMergeTree)"]
-        CW2["addToQueue(TracesNull)"] --> TN["traces_null<br/>(Null Engine)"]
+    subgraph Write["쓰기 경로 (Worker)"]
+        CW["ClickhouseWriter<br/>addToQueue()"]
+        CW -->|Traces| T["traces<br/>(ReplacingMergeTree)"]
+        CW -->|TracesNull| TN["traces_null<br/>(Null Engine)"]
+        CW -->|Observations| O["observations<br/>(ReplacingMergeTree)"]
+        CW -->|Scores| S["scores<br/>(ReplacingMergeTree)"]
+        CW -->|ObsBatchStaging| BS["observations_batch_staging"]
+        CW -->|EventsFull| EF["events_full"]
     end
 
-    subgraph ClickHouse["ClickHouse 내부"]
-        TN -->|MV 트리거| AMT_ALL["traces_all_amt<br/>(AggregatingMergeTree)"]
-        TN -->|MV 트리거| AMT_7D["traces_7d_amt<br/>(AMT + TTL 7일)"]
-        TN -->|MV 트리거| AMT_30D["traces_30d_amt<br/>(AMT + TTL 30일)"]
+    subgraph MV["Materialized Views"]
+        TN -->|traces_all_amt_mv| AMT_ALL["traces_all_amt<br/>(AMT, 영구 보존)"]
+        TN -->|traces_7d_amt_mv| AMT_7D["traces_7d_amt<br/>(AMT, TTL 7일)"]
+        TN -->|traces_30d_amt_mv| AMT_30D["traces_30d_amt<br/>(AMT, TTL 30일)"]
     end
 
-    subgraph Web["Web (tRPC Router)"]
-        Router["traces.ts<br/>traceRouter.all()"] -->|쿼리| AMT_7D
-        Router2["traces.ts<br/>traceRouter.metrics()"] -->|쿼리| AMT_ALL
+    subgraph Read["읽기 경로 (Web tRPC)"]
+        Dashboard["traceRouter.all()"] -->|기간 자동 선택| AMT_7D
+        Dashboard -->|기간 자동 선택| AMT_30D
+        Dashboard -->|기간 자동 선택| AMT_ALL
+        Detail["traceRouter.byId()"] --> T
+        Detail2["traceRouter.byIdWithObservationsAndScores()"] --> T
+        Detail2 --> O
+        Detail2 --> S
     end
 ```
 
 ---
 
-## 1. ClickHouse 테이블 계층 상세 분석
+## 1. ClickHouse 집계 테이블 상세 분석
 
-### Null Engine 트리거 테이블
+### 1.1 Null Engine 트리거 패턴
 
 🔗 [`0023...sql` L3-39](file:///Users/dhsshin/Documents/LLMOps/langfuse/packages/shared/clickhouse/migrations/unclustered/0023_traces_aggregating_merge_trees.up.sql#L3-L39)
 
-```sql
-CREATE TABLE traces_null (
-    project_id      String,
-    id              String,
-    start_time      DateTime64(3),
-    metadata        Map(LowCardinality(String), String),
-    cost_details    Map(String, Decimal64(12)),
-    usage_details   Map(String, UInt64),
-    input           String,
-    output          String,
-    event_ts        DateTime64(3)
-) Engine = Null();
-```
-
-> **핵심**: `Null()` 엔진은 데이터를 물리적으로 저장하지 않습니다. Insert된 데이터는 연결된 3개의 Materialized View에 의해 즉시 집계되어 각각의 AMT 테이블로 흘러갑니다.
-
-### AggregatingMergeTree 테이블 — 집계 함수 해부
-
-🔗 [`0023...sql` L42-87](file:///Users/dhsshin/Documents/LLMOps/langfuse/packages/shared/clickhouse/migrations/unclustered/0023_traces_aggregating_merge_trees.up.sql#L42-L87)
-
-```sql
-CREATE TABLE traces_all_amt (    
-    -- 1. 시간: 가장 이른 시작 시간을 유지
-    `start_time`   SimpleAggregateFunction(min, DateTime64(3)),
-
-    -- 2. 메타데이터: Map 키-값 쌍을 병합 (새 키 추가, 기존 키 최신값 유지)
-    `metadata`     SimpleAggregateFunction(maxMap, Map(String, String)),
-
-    -- 3. 태그: 중복 없는 유니크 배열 병합
-    `tags`         SimpleAggregateFunction(groupUniqArrayArray, Array(String)),
-
-    -- 4. 비용: Map의 각 키별 숫자를 누적 합산
-    `cost_details` SimpleAggregateFunction(sumMap, Map(String, Decimal(38, 12))),
-
-    -- 5. I/O: 최신 타임스탬프의 값만 유지 (UPDATE 대체)
-    `input`        AggregateFunction(argMax, String, DateTime64(3)) CODEC(ZSTD(3)),
-
-    -- 6. 인덱스: 단건 조회용 블룸 필터
-    INDEX idx_trace_id id TYPE bloom_filter(0.001) GRANULARITY 1
-) Engine = AggregatingMergeTree()
-      ORDER BY (project_id, id);
-```
-
 ```mermaid
 flowchart TD
-    subgraph 집계함수["ClickHouse 집계 함수별 동작"]
-        direction LR
-        MIN["min(start_time)<br/>─────────────<br/>여러 이벤트 중<br/>가장 이른 시간 유지"]
-        SUMMAP["sumMap(cost_details)<br/>─────────────<br/>동일 키의 값을<br/>누적 합산"]
-        ARGMAX["argMax(input, event_ts)<br/>─────────────<br/>가장 최신 타임스탬프의<br/>값 하나만 유지"]
-        MAXMAP["maxMap(metadata)<br/>─────────────<br/>동일 키 중 최신 값으로<br/>덮어쓰기"]
-    end
+    Insert["Worker: addToQueue(TracesNull, record)"] --> NullEngine["traces_null<br/>(Null Engine — 저장하지 않음)"]
+    NullEngine -->|MV 1| ALL["traces_all_amt<br/>SELECT ... FROM traces_null"]
+    NullEngine -->|MV 2| D7["traces_7d_amt<br/>SELECT ... FROM traces_null"]
+    NullEngine -->|MV 3| D30["traces_30d_amt<br/>SELECT ... FROM traces_null"]
 ```
 
-| 집계 함수 | 적용 컬럼 | 동작 요약 | UPDATE 쿼리 대체 여부 |
+> **왜 Null Engine인가?**: 하나의 INSERT로 3개의 AMT 테이블에 동시 분기합니다. Null 테이블 자체는 데이터를 물리적으로 보관하지 않아 스토리지 비용이 0입니다.
+
+### 1.2 AggregatingMergeTree 집계 함수 전체 매핑
+
+| 집계 함수 | 적용 컬럼 | 동작 | SQL 예시 |
 |---|---|---|---|
-| `min` | `start_time`, `created_at` | 가장 이른(오래된) 값 유지 | ✅ |
-| `max` | `end_time`, `updated_at` | 가장 늦은(최신) 값 유지 | ✅ |
-| `sumMap` | `cost_details`, `usage_details` | Map 키별 숫자 합산 | ✅ |
-| `maxMap` | `metadata` | Map 키별 최신값 유지 | ✅ |
-| `groupUniqArrayArray` | `tags`, `observation_ids`, `score_ids` | 중복 없는 유니크 배열 병합 | ✅ |
-| `argMax(value, timestamp)` | `input`, `output`, `bookmarked`, `public` | 최신 타임스탬프의 값만 보존 | ✅ |
-
-> **설계 원칙**: ClickHouse는 `UPDATE`/`DELETE`가 매우 비싼 작업입니다. Langfuse는 이를 완전히 회피하고, 대신 **새 이벤트를 Insert만 하면 MV가 백그라운드에서 상태를 자동으로 병합**하는 패턴을 사용합니다.
-
-### TTL 기반 파티셔닝 전략
-
-🔗 [`0023...sql` L129-174](file:///Users/dhsshin/Documents/LLMOps/langfuse/packages/shared/clickhouse/migrations/unclustered/0023_traces_aggregating_merge_trees.up.sql#L129-L174)
-
-| 테이블 | TTL | 용도 |
-|---|---|---|
-| `traces_all_amt` | 없음 (영구 보존) | 전체 기간 대시보드 조회 |
-| `traces_7d_amt` | `toDate(start_time) + INTERVAL 7 DAY` | "최근 7일" 필터 시 초고속 응답 |
-| `traces_30d_amt` | `toDate(start_time) + INTERVAL 30 DAY` | "최근 30일" 필터 시 고속 응답 |
+| `min` | `start_time`, `created_at` | 가장 이른 값 유지 | `SimpleAggregateFunction(min, DateTime64(3))` |
+| `max` | `end_time`, `updated_at` | 가장 늦은 값 유지 | `SimpleAggregateFunction(max, DateTime64(3))` |
+| `sumMap` | `cost_details`, `usage_details` | Map 키별 값 합산 | `SimpleAggregateFunction(sumMap, Map(String, Decimal(38,12)))` |
+| `maxMap` | `metadata` | Map 키별 최신값 유지 | `SimpleAggregateFunction(maxMap, Map(String, String))` |
+| `groupUniqArrayArray` | `tags`, `observation_ids`, `score_ids` | 중복 없는 유니크 배열 | `SimpleAggregateFunction(groupUniqArrayArray, Array(String))` |
+| `argMax(val, ts)` | `input`, `output`, `bookmarked`, `public` | 최신 타임스탬프의 값만 | `AggregateFunction(argMax, String, DateTime64(3))` |
+| `any` | `name`, `user_id`, `session_id`, `release`, `environment` | NULL이 아닌 첫 번째 값 | `SimpleAggregateFunction(any, String)` |
 
 ```mermaid
 flowchart LR
-    User["대시보드 사용자"] --> Filter{"기간 필터 선택"}
-    Filter -- "최근 7일" --> Q7["traces_7d_amt<br/>⚡ 가장 작은 테이블"]
-    Filter -- "최근 30일" --> Q30["traces_30d_amt<br/>🔹 중간 크기"]
-    Filter -- "전체 기간" --> QALL["traces_all_amt<br/>🔶 전체 데이터"]
+    subgraph argMax["argMax(input, event_ts) 동작 예시"]
+        direction TB
+        E1["event_ts=1: input='Hello'"]
+        E2["event_ts=2: input='World'"]
+        E3["event_ts=3: input='Final'"]
+        Result["→ argMax 결과: 'Final'<br/>(event_ts가 가장 큰 값)"]
+        E1 --> Result
+        E2 --> Result
+        E3 --> Result
+    end
+
+    subgraph sumMap["sumMap(cost_details) 동작 예시"]
+        direction TB
+        M1["event1: {input: 0.01}"]
+        M2["event2: {input: 0.02, output: 0.03}"]
+        MResult["→ sumMap 결과:<br/>{input: 0.03, output: 0.03}"]
+        M1 --> MResult
+        M2 --> MResult
+    end
 ```
+
+### 1.3 TTL 기반 뷰 선택 전략
+
+```mermaid
+flowchart TD
+    Query["대시보드 쿼리"] --> Analyzer{"시간 범위 분석<br/>(Query Planner)"}
+    Analyzer -- "endTime - startTime ≤ 7일" --> AMT_7D["traces_7d_amt<br/>⚡ 최소 데이터"]
+    Analyzer -- "7일 < 범위 ≤ 30일" --> AMT_30D["traces_30d_amt<br/>🔹 중간 크기"]
+    Analyzer -- "범위 > 30일 또는 전체" --> AMT_ALL["traces_all_amt<br/>🔶 전체 데이터"]
+```
+
+| 테이블 | TTL | 예상 크기 (상대값) | 쿼리 속도 |
+|---|---|---|---|
+| `traces_7d_amt` | `toDate(start_time) + 7 DAY` | 1x | ⚡ 최고속 |
+| `traces_30d_amt` | `toDate(start_time) + 30 DAY` | 4x | 🔹 빠름 |
+| `traces_all_amt` | 없음 (영구) | 100x+ | 🔶 보통 |
+
+> **커스터마이징**: TTL을 사내 정책에 맞게 수정하여 스토리지 비용과 쿼리 성능을 최적화할 수 있습니다 (예: 14일, 90일).
 
 ---
 
-## 2. tRPC 라우터 분석 — `traces.ts` (665줄)
-
-### 라우터 프로시저 전체 목록
+## 2. tRPC 라우터 전체 프로시저 맵
 
 🔗 [`traces.ts` L97](file:///Users/dhsshin/Documents/LLMOps/langfuse/web/src/server/api/routers/traces.ts#L97)
 
 ```mermaid
 flowchart TD
-    TR["traceRouter"] --> HC["hasTracingConfigured<br/>(query)"]
-    TR --> ALL["all<br/>(query)"]
-    TR --> CA["countAll<br/>(query)"]
-    TR --> MET["metrics<br/>(query)"]
-    TR --> FO["filterOptions<br/>(query)"]
-    TR --> BI["byId<br/>(query)"]
-    TR --> BIOS["byIdWithObservationsAndScores<br/>(query)"]
-    TR --> DM["deleteMany<br/>(mutation)"]
-    TR --> BK["bookmark<br/>(mutation)"]
-    TR --> PB["publish<br/>(mutation)"]
-    TR --> AG["getAgentGraphData<br/>(query)"]
+    TR["traceRouter<br/>(createTRPCRouter)"]
+
+    subgraph Queries["Query Procedures"]
+        HC["hasTracingConfigured<br/>(L98)"]
+        ALL["all (L125)<br/>메인 대시보드 목록"]
+        CA["countAll (L153)<br/>페이지네이션 총 건수"]
+        MET["metrics (L180)<br/>트레이스별 메트릭"]
+        FO["filterOptions (L262)<br/>필터 드롭다운 옵션"]
+        BI["byId (L332)<br/>단건 조회"]
+        BIOS["byIdWithObservationsAndScores (L352)<br/>상세 페이지"]
+        AG["getAgentGraphData (L594)<br/>에이전트 그래프 뷰"]
+    end
+
+    subgraph Mutations["Mutation Procedures"]
+        DM["deleteMany (L429)<br/>벌크 삭제"]
+        BK["bookmark (L475)<br/>북마크 토글"]
+        PB["publish (L535)<br/>공개/비공개 토글"]
+    end
+
+    TR --> Queries
+    TR --> Mutations
 ```
 
-### `traceRouter.all` — 메인 대시보드 쿼리
+### 2.1 `traceRouter.all` — 메인 대시보드 목록 쿼리
 
 🔗 [`traces.ts` L125-152](file:///Users/dhsshin/Documents/LLMOps/langfuse/web/src/server/api/routers/traces.ts#L125-L152)
 
-```typescript
-all: protectedProjectProcedure
-  .input(TraceFilterOptions)
-  .query(async ({ input, ctx }) => {
-    // 1. 댓글 필터 적용 (Prisma → PostgreSQL)
-    const { filterState, hasNoMatches } = await applyCommentFilters({ ... });
+```mermaid
+sequenceDiagram
+    participant UI as React UI (DataTable)
+    participant tRPC as traceRouter.all
+    participant PG as Prisma (PostgreSQL)
+    participant CH as ClickHouse
 
-    // 2. ClickHouse AMT 테이블 쿼리
-    const traces = await getTracesTable({
-      projectId: ctx.session.projectId,
-      filter: filterState,
-      searchQuery: input.searchQuery ?? undefined,
-      orderBy: normalizeOrderByForTable({ orderBy: input.orderBy, ... }),
-      limit: input.limit,
-      page: input.page,
-    });
+    UI->>tRPC: useQuery({ projectId, filter, searchQuery, orderBy, limit, page })
 
-    return { traces };
-  }),
+    tRPC->>PG: applyCommentFilters(filterState)
+    Note over PG: 댓글 필터가 있으면<br/>PostgreSQL에서 매칭 ID 조회
+    PG-->>tRPC: { filterState, hasNoMatches }
+
+    alt hasNoMatches === true
+        tRPC-->>UI: { traces: [] }
+    end
+
+    tRPC->>CH: getTracesTable({ filter, searchQuery, orderBy, limit, page })
+    Note over CH: AMT 뷰에서 페이지네이션 쿼리
+    CH-->>tRPC: traces[]
+
+    tRPC-->>UI: { traces }
 ```
 
-### `traceRouter.filterOptions` — 병렬 쿼리 패턴 실례
+### 2.2 `traceRouter.filterOptions` — 6개 병렬 ClickHouse 쿼리
 
 🔗 [`traces.ts` L262-331](file:///Users/dhsshin/Documents/LLMOps/langfuse/web/src/server/api/routers/traces.ts#L262-L331)
 
-```typescript
-// 6개의 ClickHouse 쿼리를 Promise.all로 동시 실행
-const [numericScoreNames, categoricalScoreNames, traceNames, tags, userIds, sessionIds] =
-  await Promise.all([
-    getNumericScoresGroupedByName(projectId, filters),
-    getCategoricalScoresGroupedByName(projectId, filters),
-    getTracesGroupedByName(projectId, ...),
-    getTracesGroupedByTags({ projectId, filter }),
-    getTracesGroupedByUsers(projectId, ...),
-    getTracesGroupedBySessionId(projectId, ...),
-  ]);
+```mermaid
+flowchart LR
+    subgraph Input["입력"]
+        PI["projectId"]
+        TF["timestampFilter[]"]
+    end
+
+    subgraph ParallelQueries["Promise.all (6개 동시)"]
+        Q1["getNumericScoresGroupedByName()"]
+        Q2["getCategoricalScoresGroupedByName()"]
+        Q3["getTracesGroupedByName()"]
+        Q4["getTracesGroupedByTags()"]
+        Q5["getTracesGroupedByUsers()"]
+        Q6["getTracesGroupedBySessionId()"]
+    end
+
+    subgraph Output["응답"]
+        R1["scores_avg: string[]"]
+        R2["score_categories: object[]"]
+        R3["name: { value, count }[]"]
+        R4["tags: string[]"]
+        R5["users: { value, count }[]"]
+        R6["sessions: { value, count }[]"]
+    end
+
+    Input --> ParallelQueries --> Output
 ```
 
-> **성능 최적화**: 필터 드롭다운의 옵션 목록을 채우기 위해 6개의 독립적인 ClickHouse 쿼리를 동시에 날리고, 가장 느린 쿼리가 완료되면 한 번에 응답합니다.
+> **성능**: 6개의 독립 쿼리를 `Promise.all`로 동시 실행하여 **가장 느린 쿼리 하나의 시간만큼만 대기**합니다.
 
-### `traceRouter.byIdWithObservationsAndScores` — 상세 페이지의 병렬 데이터 패칭
+### 2.3 `traceRouter.byIdWithObservationsAndScores` — 상세 페이지
 
 🔗 [`traces.ts` L352-428](file:///Users/dhsshin/Documents/LLMOps/langfuse/web/src/server/api/routers/traces.ts#L352-L428)
 
-```typescript
-const [observations, traceScores] = await Promise.all([
-  getObservationsForTrace({           // ClickHouse
-    traceId, projectId,
-    timestamp, includeIO: false,
-  }),
-  getScoresAndCorrectionsForTraces({  // ClickHouse
-    projectId,
-    traceIds: [input.traceId],
-    timestamp,
-  }),
-]);
-```
-
 ```mermaid
 sequenceDiagram
-    participant UI as React UI
+    participant UI as Trace Detail Page
     participant Router as traceRouter.byIdWithObservationsAndScores
+    participant MW as protectedGetTraceProcedure
     participant CH as ClickHouse
 
-    UI->>Router: tRPC query (traceId)
-    Note over Router: protectedGetTraceProcedure<br/>→ 인가 + Trace 조회 완료
+    UI->>Router: tRPC query (traceId, projectId)
+    Router->>MW: 미들웨어 실행
+    MW->>CH: getTraceById() → ctx.trace 설정
 
-    par 병렬 쿼리
-        Router->>CH: getObservationsForTrace()
-        Router->>CH: getScoresAndCorrectionsForTraces()
+    par 병렬 ClickHouse 쿼리
+        Router->>CH: getObservationsForTrace(traceId)
+        Router->>CH: getScoresAndCorrectionsForTraces([traceId])
     end
 
     CH-->>Router: observations[]
     CH-->>Router: scores[]
 
     Router->>Router: filterAndValidateDbScoreList()
-    Router->>Router: latency 계산 (obsEndTimes - obsStartTimes)
-    Router-->>UI: { trace, observations, scores, latency }
+    Router->>Router: partition(scores, isCorrection)
+    Router->>Router: latency 계산<br/>(obsEndTimes[-1] - obsStartTimes[0])
+
+    Router-->>UI: { trace, observations, scores, corrections, latency }
 ```
+
+**Latency 계산 로직** (L394-410):
+
+```typescript
+const latencyMs =
+  obsStartTimes.length > 0
+    ? obsEndTimes.length > 0
+      ? obsEndTimes[obsEndTimes.length - 1].getTime() - obsStartTimes[0].getTime()
+      : obsStartTimes.length > 1
+        ? obsStartTimes[obsStartTimes.length - 1].getTime() - obsStartTimes[0].getTime()
+        : undefined
+    : undefined;
+```
+
+```mermaid
+flowchart TD
+    Check1{startTimes 존재?}
+    Check1 -- No --> Undef1["latency = undefined"]
+    Check1 -- Yes --> Check2{endTimes 존재?}
+    Check2 -- Yes --> Calc1["latency = lastEnd - firstStart"]
+    Check2 -- No --> Check3{startTimes ≥ 2개?}
+    Check3 -- Yes --> Calc2["latency = lastStart - firstStart<br/>(fallback)"]
+    Check3 -- No --> Undef2["latency = undefined"]
+```
+
+### 2.4 `traceRouter.bookmark` — ClickHouse Upsert 패턴
+
+🔗 [`traces.ts` L475-534](file:///Users/dhsshin/Documents/LLMOps/langfuse/web/src/server/api/routers/traces.ts#L475-L534)
+
+```mermaid
+sequenceDiagram
+    participant UI
+    participant Router as traceRouter.bookmark
+    participant CH as ClickHouse
+    participant Events as events Table
+
+    UI->>Router: mutation(traceId, bookmarked: true)
+    Router->>Router: throwIfNoProjectAccess(scope: "objects:bookmark")
+    Router->>Router: auditLog(resourceType: "trace", action: "bookmark")
+    Router->>CH: getTraceById(traceId)
+    CH-->>Router: clickhouseTrace
+
+    Router->>Router: clickhouseTrace.bookmarked = true
+    Router->>CH: upsertTrace(convertTraceDomainToClickhouse(trace))
+
+    alt LANGFUSE_ENABLE_EVENTS_TABLE_FLAGS === "true"
+        Router->>Events: updateEvents(traceId, { bookmarked: true })
+    end
+
+    Router-->>UI: trace
+```
+
+> **주목**: ClickHouse에서는 `UPDATE`가 없으므로, "북마크 토글"도 실제로는 **전체 레코드를 새로 INSERT**하는 방식(`upsertTrace`)으로 처리됩니다. `ReplacingMergeTree`가 백그라운드에서 구버전 레코드를 제거합니다.
 
 ---
 
-## 다음 문서
+## 3. 병합 로직과 쿼리의 연결고리
 
-사내 모델 가격 추가, SSO 연동 등 커스터마이징이 필요한 소스코드 진입점은 👉 [13 Customization Source Breakdown](./13-customization-source-breakdown.md)에서 다룹니다.
+워커의 `mergeRecords()` 함수가 어떻게 동작하는지 이해하면, ClickHouse 쿼리 결과를 올바르게 해석할 수 있습니다.
+
+🔗 [`IngestionService/index.ts` L981](file:///Users/dhsshin/Documents/LLMOps/langfuse/worker/src/services/IngestionService/index.ts#L981-L1002)
+
+```typescript
+private mergeRecords<T extends InsertRecord>(
+  records: T[],                     // [clickhouseRecord, ...newEvents]
+  immutableEntityKeys: string[],
+): Record<string, unknown> {
+  let result = { id: records[0].id, project_id: records[0].project_id };
+  for (const record of records) {
+    result = overwriteObject(result, record, immutableEntityKeys);
+  }
+  result.event_ts = new Date().getTime();  // ← 병합 시점 타임스탬프
+  return result;
+}
+```
+
+```mermaid
+flowchart LR
+    subgraph Records["병합 순서"]
+        R1["ClickHouse 기존 레코드<br/>(baseline)"]
+        R2["Create 이벤트"]
+        R3["Update 이벤트 1"]
+        R4["Update 이벤트 2"]
+    end
+
+    subgraph Merge["overwriteObject 동작"]
+        M1["R1 → result 초기화"]
+        M2["R2 덮어쓰기<br/>(immutable 키 제외)"]
+        M3["R3 덮어쓰기"]
+        M4["R4 덮어쓰기"]
+        M5["event_ts = now()"]
+    end
+
+    R1 --> M1 --> M2
+    R2 --> M2 --> M3
+    R3 --> M3 --> M4
+    R4 --> M4 --> M5
+```
+
+> **ClickHouse Record가 왜 먼저 오는가?**: 기존 레코드를 baseline으로 놓고 새 이벤트가 순서대로 덮어쓰면, `immutableEntityKeys`(id, project_id, timestamp 등)는 최초 Create 시점의 값이 보존됩니다.
+
+---
+
+## 관련 문서 네비게이션
+
+| 방향 | 문서 |
+|---|---|
+| ⬆️ 구조 해부 | [08 ClickHouse Schema & MVs](../40-anatomy-deep-dive/08-clickhouse-schema-and-mvs.md) |
+| ⬆️ tRPC 해부 | [09 tRPC and Next.js](../40-anatomy-deep-dive/09-trpc-and-nextjs.md) |
+| ⬅️ 이전 | [11 Worker Source Breakdown](./11-worker-source-breakdown.md) |
+| ➡️ 다음 | [13 Customization Source Breakdown](./13-customization-source-breakdown.md) |
+| 🏠 색인 | [README](../README.md) |

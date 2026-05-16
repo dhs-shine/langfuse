@@ -1,26 +1,31 @@
 # 10 Ingestion Source Breakdown
 
 > **선행 문서**: [06 Ingestion Pipeline Anatomy](../40-anatomy-deep-dive/06-ingestion-pipeline.md) · [03 Architecture](../10-architecture/03-architecture.md)
+>
 > **분석 대상 소스**:
-> - [`web/src/pages/api/public/ingestion.ts`](file:///Users/dhsshin/Documents/LLMOps/langfuse/web/src/pages/api/public/ingestion.ts)
-> - [`packages/shared/src/server/ingestion/processEventBatch.ts`](file:///Users/dhsshin/Documents/LLMOps/langfuse/packages/shared/src/server/ingestion/processEventBatch.ts)
+> | 파일 | 줄 수 | 역할 |
+> |---|---|---|
+> | [`web/src/pages/api/public/ingestion.ts`](file:///Users/dhsshin/Documents/LLMOps/langfuse/web/src/pages/api/public/ingestion.ts) | ~175 | HTTP 진입점, 인증·Rate Limit |
+> | [`packages/shared/src/server/ingestion/processEventBatch.ts`](file:///Users/dhsshin/Documents/LLMOps/langfuse/packages/shared/src/server/ingestion/processEventBatch.ts) | 465 | 핵심 비즈니스 로직 전체 |
+> | [`packages/shared/src/server/ingestion/types.ts`](file:///Users/dhsshin/Documents/LLMOps/langfuse/packages/shared/src/server/ingestion/types.ts) | — | Zod 이벤트 스키마 팩토리 |
+> | [`packages/shared/src/server/ingestion/sampling.ts`](file:///Users/dhsshin/Documents/LLMOps/langfuse/packages/shared/src/server/ingestion/sampling.ts) | — | 샘플링 결정 로직 |
 
 ---
 
-## 전체 호출 시퀀스
-
-SDK의 `POST /api/public/ingestion` 요청이 웹 서버 내부에서 어떤 함수를 어떤 순서로 호출하는지, 실제 소스코드의 함수명과 매핑한 시퀀스입니다.
+## End-to-End 콜 시퀀스 (실제 함수명 매핑)
 
 ```mermaid
 sequenceDiagram
     participant SDK as Client SDK
-    participant MW as cors / runMiddleware
+    participant MW as runMiddleware<br/>(ingestion.ts)
     participant Auth as ApiAuthService<br/>.verifyAuthHeaderAndReturnScope()
     participant RL as RateLimitService<br/>.rateLimitRequest()
-    participant Zod as Zod safeParse
-    participant PEB as processEventBatch()
-    participant S3 as S3 StorageService<br/>.uploadJson()
-    participant IQ as IngestionQueue<br/>.add()
+    participant PEB as processEventBatch()<br/>(processEventBatch.ts L104)
+    participant Schema as ingestionSchema<br/>.safeParse() (L155)
+    participant Sort as sortBatch() (L379)
+    participant S3 as StorageService<br/>.uploadJson() (L238)
+    participant Sample as isTraceIdInSample()<br/>(L300)
+    participant IQ as IngestionQueue<br/>.add() (L321)
 
     SDK->>MW: POST /api/public/ingestion
     MW->>Auth: req.headers.authorization
@@ -29,163 +34,262 @@ sequenceDiagram
     alt authCheck.validKey === false
         MW-->>SDK: 401 Unauthorized
     end
+    alt scope.isIngestionSuspended === true
+        MW-->>SDK: 403 Forbidden (사용량 초과)
+    end
 
     MW->>RL: rateLimitRequest(scope, "ingestion")
-    Note right of RL: Fail-open: catch(e) → logger.error → 계속 진행
+    Note over RL: try/catch Fail-open<br/>Redis 장애 시 logger.error만 남기고 계속
 
-    MW->>Zod: batchType.safeParse(req.body)
-    alt parsedSchema.success === false
-        MW-->>SDK: 400 Invalid request data
-    end
+    MW->>PEB: processEventBatch(input, authCheck, options)
+    PEB->>Schema: flatMap → safeParse(event)
+    Note over Schema: 실패 이벤트 → validationErrors[]<br/>성공 이벤트만 다음 단계
 
-    MW->>PEB: processEventBatch(batch, authCheck)
+    PEB->>PEB: SDK_LOG 타입 필터링 (L180-186)
+    PEB->>Sort: sortBatch(batch)
+    Note over Sort: Create 이벤트를 앞에,<br/>Update 이벤트를 뒤에 배치
 
-    loop 각 eventBodyId 그룹
-        PEB->>S3: uploadJson(bucketPath, eventData)
-        S3-->>PEB: OK / SlowDown Error
-    end
-
-    alt S3 SlowDown 발생
-        PEB->>PEB: markProjectS3Slowdown(projectId)
-        PEB-->>MW: throw Error (abort)
-    end
+    PEB->>PEB: eventBodyId로 그룹핑 (L192-221)
 
     loop 각 eventBodyId 그룹
-        PEB->>PEB: isTraceIdInSample() 확인
+        PEB->>S3: Promise.allSettled(uploadJson)
+        S3-->>PEB: OK / SlowDown / 기타 에러
+    end
+
+    alt s3UploadErrored === true
+        PEB-->>MW: throw Error (L269)
+    end
+
+    loop 각 eventBodyId 그룹
+        PEB->>Sample: isTraceIdInSample()
         alt isSampled === false
-            PEB->>PEB: recordIncrement("sampling_decision: out") → skip
+            PEB->>PEB: recordIncrement(sampling_decision: out) → skip
         end
-        PEB->>IQ: add(IngestionJob, payload, { delay })
+        PEB->>IQ: queue.add(IngestionJob, payload, { delay })
     end
 
+    PEB->>PEB: aggregateBatchResult() (L351)
     PEB-->>MW: { successes, errors }
     MW-->>SDK: 207 Multi-Status
 ```
 
 ---
 
-## 소스코드 라인 바이 라인 분석
+## Phase 1: 인증 및 사전 검증
 
-### 1단계: 인증 — `ingestion.ts` L76-88
+### 1.1 API Key 인증 — `ingestion.ts` L76-88
 
-🔗 [`ingestion.ts` L76](file:///Users/dhsshin/Documents/LLMOps/langfuse/web/src/pages/api/public/ingestion.ts#L76-L88)
+🔗 [`ingestion.ts`](file:///Users/dhsshin/Documents/LLMOps/langfuse/web/src/pages/api/public/ingestion.ts#L76-L88)
 
 ```typescript
-const authCheck = await new ApiAuthService(
-  prisma,       // PostgreSQL ORM → API 키 조회
-  redis,        // Redis → 키 캐시 조회 (Cache-aside 패턴)
-).verifyAuthHeaderAndReturnScope(req.headers.authorization);
+const authCheck = await new ApiAuthService(prisma, redis)
+  .verifyAuthHeaderAndReturnScope(req.headers.authorization);
 ```
 
-| 검사 항목 | 실패 시 | 코드 위치 |
-|---|---|---|
-| `authCheck.validKey` === false | `401 Unauthorized` | L81 |
-| `authCheck.scope.projectId` 미존재 | `401 Unauthorized` ("Missing projectId") | L84 |
-| `authCheck.scope.isIngestionSuspended` === true | `403 Forbidden` (사용량 초과) | L90 |
+`ApiAuthService`는 **Cache-aside 패턴**으로 동작합니다:
 
-**커스터마이징 포인트**: 사내 API 키 발급 체계를 별도로 운영할 경우, `ApiAuthService` 클래스의 `verifyAuthHeaderAndReturnScope` 메서드 내부에 사내 키 저장소(Vault, HSM 등) 연동 코드를 추가할 수 있습니다.
+```mermaid
+flowchart TD
+    Auth["verifyAuthHeaderAndReturnScope()"] --> Parse["Authorization 헤더 파싱<br/>(Bearer or Basic)"]
+    Parse --> RedisLookup{"Redis 캐시에<br/>키가 있는가?"}
+    RedisLookup -- Hit --> Return["scope 반환"]
+    RedisLookup -- Miss --> PrismaLookup["Prisma DB에서<br/>ApiKey 테이블 조회"]
+    PrismaLookup --> Found{존재?}
+    Found -- Yes --> CacheSet["Redis에 캐시 저장"]
+    CacheSet --> Return
+    Found -- No --> Reject["{ validKey: false }"]
+```
+
+| `authCheck.scope` 속성 | 타입 | 용도 |
+|---|---|---|
+| `projectId` | `string` | 이벤트를 적재할 프로젝트 식별 |
+| `accessLevel` | `"project"` \| `"scores"` | 전체 Ingestion 권한 vs Score 전용 권한 |
+| `orgId` | `string?` | 조직 레벨 메타데이터 (메트릭 태깅용) |
+| `plan` | `string?` | Cloud 요금제 (Free/Pro/Team) |
+| `isIngestionSuspended` | `boolean` | 사용량 초과 시 `403` 반환 |
+| `rateLimitOverrides` | `object?` | 프로젝트별 커스텀 Rate Limit 설정 |
+
+**커스터마이징 포인트**: 사내 API 키 발급 체계를 운영할 경우, `ApiAuthService`의 내부 로직에 사내 Vault/HSM 연동 코드를 추가할 수 있습니다.
 
 ---
 
-### 2단계: Rate Limiting — `ingestion.ts` L103-116
+### 1.2 Rate Limiting — `ingestion.ts` L103-116
 
-🔗 [`ingestion.ts` L103](file:///Users/dhsshin/Documents/LLMOps/langfuse/web/src/pages/api/public/ingestion.ts#L103-L116)
+🔗 [`ingestion.ts`](file:///Users/dhsshin/Documents/LLMOps/langfuse/web/src/pages/api/public/ingestion.ts#L103-L116)
+
+```mermaid
+flowchart LR
+    A["rateLimitRequest(scope, 'ingestion')"] --> B{Redis 응답<br/>정상?}
+    B -- Yes --> C{Rate 초과?}
+    C -- Yes --> D["429 Too Many Requests<br/>.sendRestResponseIfLimited(res)"]
+    C -- No --> E["다음 단계로 진행"]
+    B -- Error --> F["catch(e) →<br/>logger.error('Error while rate limiting', e)"]
+    F --> E
+    style F fill:#ffd700,stroke:#333
+```
+
+> **Fail-open 설계**: `try/catch` 블록으로 감싸져 있어 Redis 장애, 네트워크 타임아웃 등이 발생해도 Rate Limiter가 수집을 차단하지 않습니다. 이는 의도적인 가용성 우선 설계입니다.
+
+---
+
+## Phase 2: Zod 런타임 검증 및 정렬
+
+### 2.1 스키마 검증 — `processEventBatch.ts` L151-186
+
+🔗 [`processEventBatch.ts` L151](file:///Users/dhsshin/Documents/LLMOps/langfuse/packages/shared/src/server/ingestion/processEventBatch.ts#L151-L186)
+
+```mermaid
+flowchart TD
+    Input["input: unknown[]"] --> FlatMap["flatMap(event => ...)"]
+
+    FlatMap --> Parse["ingestionSchema.safeParse(event)"]
+    Parse --> ParseOK{성공?}
+    ParseOK -- No --> VErr["validationErrors.push()<br/>return []"]
+    ParseOK -- Yes --> AuthzChk["isAuthorized(parsed, authCheck)"]
+    AuthzChk --> AuthzOK{인가?}
+    AuthzOK -- No --> AErr["authenticationErrors.push()<br/>return []"]
+    AuthzOK -- Yes --> PassThru["return [parsed.data]"]
+
+    PassThru --> Filter2["flatMap: SDK_LOG 타입?"]
+    Filter2 -- Yes --> Log["logger.info() → return []"]
+    Filter2 -- No --> Batch["batch[] 에 추가"]
+```
+
+**권한 검증 — `isAuthorized()` 함수** (L358-374):
+
+🔗 [`processEventBatch.ts` L358](file:///Users/dhsshin/Documents/LLMOps/langfuse/packages/shared/src/server/ingestion/processEventBatch.ts#L358-L374)
 
 ```typescript
-try {
-  const rateLimitCheck = await RateLimitService.getInstance()
-    .rateLimitRequest(authCheck.scope, "ingestion");
-  if (rateLimitCheck?.isRateLimited()) {
-    return rateLimitCheck.sendRestResponseIfLimited(res);
-  }
-} catch (e) {
-  // ★ Fail-open 디자인: Redis 장애 시에도 수집 중단하지 않음
-  logger.error("Error while rate limiting", e);
-}
+const isAuthorized = (event, authScope): boolean => {
+  if (event.type === eventTypes.SDK_LOG)    return true;      // SDK 로그는 무조건 허용
+  if (event.type === eventTypes.SCORE_CREATE)                 // Score는 scores 키도 가능
+    return authScope.scope.accessLevel === "scores" || authScope.scope.accessLevel === "project";
+  return authScope.scope.accessLevel === "project";           // 나머지는 project 키만
+};
+```
+
+| API 키 레벨 | SDK_LOG | SCORE_CREATE | 나머지 (TRACE, SPAN 등) |
+|---|---|---|---|
+| `project` | ✅ | ✅ | ✅ |
+| `scores` | ✅ | ✅ | ❌ |
+
+### 2.2 이벤트 정렬 — `sortBatch()` (L379-398)
+
+🔗 [`processEventBatch.ts` L379](file:///Users/dhsshin/Documents/LLMOps/langfuse/packages/shared/src/server/ingestion/processEventBatch.ts#L379-L398)
+
+```typescript
+const sortBatch = (batch) => {
+  const updateEvents = [GENERATION_UPDATE, SPAN_UPDATE, OBSERVATION_UPDATE];
+  const updates = batch.filter(e => updateEvents.includes(e.type)).sort(byTimestamp);
+  const others  = batch.filter(e => !updateEvents.includes(e.type)).sort(byTimestamp);
+  return [...others, ...updates];  // Create 먼저, Update 나중
+};
 ```
 
 ```mermaid
 flowchart LR
-    A[rateLimitRequest 호출] --> B{Redis 응답?}
-    B -- 정상 --> C{Rate Exceeded?}
-    C -- Yes --> D[429 반환]
-    C -- No --> E[다음 단계로 진행]
-    B -- 에러/타임아웃 --> F["logger.error() → 무시"]
-    F --> E
+    subgraph Before["정렬 전"]
+        E1["SPAN_UPDATE t=3"]
+        E2["TRACE_CREATE t=1"]
+        E3["GENERATION_CREATE t=2"]
+        E4["SPAN_UPDATE t=4"]
+    end
+    subgraph After["정렬 후"]
+        E2b["TRACE_CREATE t=1"]
+        E3b["GENERATION_CREATE t=2"]
+        E1b["SPAN_UPDATE t=3"]
+        E4b["SPAN_UPDATE t=4"]
+    end
+    Before --> After
 ```
 
-> **설계 철학**: 데이터 수집(Ingestion)은 시스템의 생명선이므로, Rate Limiter 인프라(Redis)에 장애가 발생하더라도 수집 자체를 막아서는 안 됩니다. 이것이 **Fail-open** 패턴입니다.
+> **왜 이 순서가 중요한가?**: ClickHouse에서 `mergeAndWrite`로 이벤트를 병합할 때, Create 이벤트가 먼저 처리되어야 기본 필드(id, project_id 등)가 설정되고, 이후 Update가 추가 필드만 덮어쓸 수 있습니다.
+
+### 2.3 eventBodyId 그룹핑 — L192-221
+
+🔗 [`processEventBatch.ts` L192](file:///Users/dhsshin/Documents/LLMOps/langfuse/packages/shared/src/server/ingestion/processEventBatch.ts#L192-L221)
+
+```mermaid
+flowchart LR
+    Batch["정렬된 배치<br/>(7개 이벤트)"] --> Group["reduce()로 그룹핑"]
+    Group --> G1["trace-abc123<br/>[TRACE_CREATE, TRACE_UPDATE]"]
+    Group --> G2["observation-def456<br/>[SPAN_CREATE]"]
+    Group --> G3["observation-ghi789<br/>[GEN_CREATE, GEN_UPDATE, GEN_UPDATE]"]
+    Group --> G4["score-jkl012<br/>[SCORE_CREATE]"]
+```
+
+- **그룹 키**: `${clickhouseEntityType}-${event.body.id}` (예: `trace-abc123`)
+- **목적**: 동일 엔티티에 대한 여러 이벤트를 **하나의 S3 파일로 묶어 저장**하여 S3 PUT 횟수를 절감
 
 ---
 
-### 3단계: Zod 런타임 검증 — `processEventBatch.ts` L154-186
+## Phase 3: S3 업로드 및 SlowDown 방어
 
-🔗 [`processEventBatch.ts` L154](file:///Users/dhsshin/Documents/LLMOps/langfuse/packages/shared/src/server/ingestion/processEventBatch.ts#L154-L186)
+### 3.1 S3 업로드 — L226-265
 
-```typescript
-const ingestionSchema = createIngestionEventSchema(isLangfuseInternal);
-
-const batch = input.flatMap((event) => {
-  const parsed = ingestionSchema.safeParse(event);
-  if (!parsed.success) {
-    validationErrors.push({ id: /* ... */, error: new InvalidRequestError(...) });
-    return [];        // ← 실패한 이벤트만 걸러냄
-  }
-  if (!isAuthorized(parsed.data, authCheck)) {
-    authenticationErrors.push({ id: parsed.data.id, error: new UnauthorizedError(...) });
-    return [];
-  }
-  return [parsed.data]; // ← 성공한 이벤트는 통과
-});
-```
-
-| 핵심 동작 | 설명 |
-|---|---|
-| **부분 성공(Partial Success)** | 배치 내 10개 이벤트 중 2개가 스키마 실패해도, 나머지 8개는 정상 처리 |
-| **`SDK_LOG` 필터링** | `eventTypes.SDK_LOG` 타입은 서버에 로깅만 하고 ClickHouse 적재 대상에서 제외 (L180-185) |
-| **정렬(Sort)** | Create 이벤트가 Update 이벤트보다 먼저 처리되도록 `sortBatch()` 적용 (L188) |
-
----
-
-### 4단계: S3 업로드 & SlowDown 방어 — `processEventBatch.ts` L226-272
-
-🔗 [`processEventBatch.ts` L226](file:///Users/dhsshin/Documents/LLMOps/langfuse/packages/shared/src/server/ingestion/processEventBatch.ts#L226-L272)
+🔗 [`processEventBatch.ts` L226](file:///Users/dhsshin/Documents/LLMOps/langfuse/packages/shared/src/server/ingestion/processEventBatch.ts#L226-L265)
 
 ```mermaid
 flowchart TD
-    Start[sortedBatch를<br/>eventBodyId로 그룹핑] --> Upload["Promise.allSettled()<br/>각 그룹을 S3 업로드"]
-    Upload --> Check{모든 업로드 성공?}
-    Check -- Yes --> Enqueue[Redis 큐 삽입 단계로]
-    Check -- No --> IsSlowDown{isS3SlowDownError?}
-    IsSlowDown -- Yes --> Mark["markProjectS3Slowdown()<br/>Redis에 프로젝트 마킹"]
-    Mark --> Abort["throw Error<br/>→ 207에 에러 포함"]
-    IsSlowDown -- No --> LogError["logger.error()<br/>일반 S3 장애"]
-    LogError --> Abort
+    Start["Object.keys(sortedBatchByEventBodyId)"] --> Upload["Promise.allSettled()<br/>각 그룹을 S3에 업로드"]
+
+    Upload --> Iter["results.forEach(result => ...)"]
+    Iter --> Check{status === rejected?}
+    Check -- No --> OK["계속"]
+    Check -- Yes --> SetFlag["s3UploadErrored = true"]
+    SetFlag --> IsSD{isS3SlowDownError?}
+    IsSD -- Yes --> Mark["markProjectS3Slowdown()<br/>(Fire-and-forget, await 없음)"]
+    IsSD -- No --> LogErr["logger.error()"]
+    Mark --> LogErr
+
+    Iter --> Final{s3UploadErrored?}
+    Final -- Yes --> Throw["throw Error<br/>'Failed to upload events to blob storage'"]
+    Final -- No --> Enqueue["큐잉 단계로 진행"]
 ```
 
-**왜 `Promise.allSettled` 인가?**: `Promise.all`과 달리, 한 파일 업로드가 실패해도 나머지 업로드의 결과를 모두 확인할 수 있습니다. 실패한 파일만 골라서 에러 처리하기 위해 `allSettled`를 사용합니다.
+**S3 버킷 경로 구조**:
+```
+{LANGFUSE_S3_EVENT_UPLOAD_PREFIX}{projectId}/{entityType}/{eventBodyId}/{fileKey}.json
+
+예시: events/proj-abc/trace/trace-123/evt-uuid-456.json
+```
+
+**S3 클라이언트 초기화** — `getS3StorageServiceClient()` (L40-54):
+
+🔗 [`processEventBatch.ts` L40](file:///Users/dhsshin/Documents/LLMOps/langfuse/packages/shared/src/server/ingestion/processEventBatch.ts#L40-L54)
+
+| 환경변수 | 용도 | 사내 커스터마이징 |
+|---|---|---|
+| `LANGFUSE_S3_EVENT_UPLOAD_BUCKET` | S3 버킷 이름 | MinIO 등 호환 스토리지 가능 |
+| `LANGFUSE_S3_EVENT_UPLOAD_ENDPOINT` | S3 엔드포인트 URL | 사내 Object Storage 주소 |
+| `LANGFUSE_S3_EVENT_UPLOAD_REGION` | AWS 리전 | — |
+| `LANGFUSE_S3_EVENT_UPLOAD_FORCE_PATH_STYLE` | Path-style 강제 여부 | MinIO 사용 시 `"true"` |
+| `LANGFUSE_S3_EVENT_UPLOAD_SSE` | Server-Side Encryption | `"aws:kms"` 설정 가능 |
+| `LANGFUSE_S3_EVENT_UPLOAD_SSE_KMS_KEY_ID` | KMS 키 ID | 사내 암호화 키 |
 
 ---
 
-### 5단계: Sampling & 큐 삽입 — `processEventBatch.ts` L281-349
+## Phase 4: 샘플링 및 큐 삽입
 
-🔗 [`processEventBatch.ts` L300](file:///Users/dhsshin/Documents/LLMOps/langfuse/packages/shared/src/server/ingestion/processEventBatch.ts#L300-L349)
+### 4.1 샘플링 — L300-319
 
-```typescript
-const { isSampled, isSamplingConfigured } = isTraceIdInSample({
-  projectId: authCheck.scope.projectId,
-  event: eventData.data[0],
-});
+🔗 [`processEventBatch.ts` L300](file:///Users/dhsshin/Documents/LLMOps/langfuse/packages/shared/src/server/ingestion/processEventBatch.ts#L300-L319)
 
-if (!isSampled) {
-  recordIncrement("langfuse.ingestion.sampling", eventData.data.length, {
-    sampling_decision: "out",
-  });
-  return; // ← 큐에 넣지 않고 즉시 폐기
-}
+```mermaid
+flowchart TD
+    Event["이벤트 그룹"] --> Sample["isTraceIdInSample()"]
+    Sample --> Config{샘플링<br/>설정됨?}
+    Config -- No --> Pass["모든 이벤트 통과"]
+    Config -- Yes --> Hash["traceId 해시 기반<br/>확률 계산"]
+    Hash --> Decision{isSampled?}
+    Decision -- Yes --> Metric_In["recordIncrement(sampling_decision: in)"]
+    Decision -- No --> Metric_Out["recordIncrement(sampling_decision: out)<br/>→ return (큐 삽입 생략)"]
+    Metric_In --> Enqueue["큐에 삽입"]
 ```
 
-샘플링을 통과한 이벤트만 최종적으로 BullMQ에 삽입됩니다:
+### 4.2 BullMQ 큐 삽입 — L321-348
+
+🔗 [`processEventBatch.ts` L321](file:///Users/dhsshin/Documents/LLMOps/langfuse/packages/shared/src/server/ingestion/processEventBatch.ts#L321-L348)
 
 ```typescript
 queue.add(QueueJobs.IngestionJob, {
@@ -196,22 +300,90 @@ queue.add(QueueJobs.IngestionJob, {
     data: {
       type: eventData.type,
       eventBodyId: eventData.eventBodyId,
-      fileKey: eventData.key,         // S3 경로 참조 키
-      skipS3List: shouldSkipS3List,   // OTel 이벤트는 List 생략 가능
+      fileKey: eventData.key,
+      skipS3List: shouldSkipS3List,
+      forwardToEventsTable,
     },
-    authCheck: { ... },
+    authCheck: { validKey: true, scope: { projectId } },
   },
 }, { delay: getDelay(delay, source) });
 ```
 
-| `getDelay` 조건 | 적용 딜레이 | 이유 |
-|---|---|---|
-| UTC 23:45 ~ 00:15 사이 | `LANGFUSE_INGESTION_QUEUE_DELAY_MS` | 날짜 변경선에서 이벤트 순서 보장 |
-| OTel 소스 | 0ms | OTel은 자체 순서 보장 메커니즘 보유 |
-| 일반 API | `min(5000, env값)` | 중복 처리 방지를 위한 최소 딜레이 |
+**skipS3List 조건** (L287-298):
+
+```mermaid
+flowchart TD
+    Q["shouldSkipS3List 결정"] --> A{dataset_run_item?}
+    A -- Yes --> Skip["true (항상 스킵)"]
+    A -- No --> B{observation 타입?}
+    B -- No --> NoSkip["false"]
+    B -- Yes --> C{"OTel 소스<br/>또는 특정 프로젝트?"}
+    C -- Yes --> Skip
+    C -- No --> NoSkip
+```
+
+### 4.3 Delay 전략 — `getDelay()` (L62-82)
+
+🔗 [`processEventBatch.ts` L62](file:///Users/dhsshin/Documents/LLMOps/langfuse/packages/shared/src/server/ingestion/processEventBatch.ts#L62-L82)
+
+```mermaid
+flowchart TD
+    GD["getDelay(delay, source)"] --> Explicit{delay !== null?}
+    Explicit -- Yes --> Use["delay 값 사용"]
+    Explicit -- No --> TimeCheck{"UTC 시간이<br/>23:45~00:15?"}
+    TimeCheck -- Yes --> EnvDelay["LANGFUSE_INGESTION_QUEUE_DELAY_MS"]
+    TimeCheck -- No --> SourceCheck{source?}
+    SourceCheck -- otel --> Zero["0 (딜레이 없음)"]
+    SourceCheck -- api --> Min["Math.min(5000, ENV_DELAY)"]
+```
+
+| 시간대 | OTel 소스 | API 소스 | 이유 |
+|---|---|---|---|
+| 일반 시간 | 0ms | min(5000, env) | API는 Create/Update 순서 보장 필요 |
+| UTC 23:45~00:15 | env값 | env값 | 날짜 변경선에서의 순서 충돌 방지 |
+
+---
+
+## Phase 5: 응답 조립
+
+### 5.1 aggregateBatchResult — L400-464
+
+🔗 [`processEventBatch.ts` L400](file:///Users/dhsshin/Documents/LLMOps/langfuse/packages/shared/src/server/ingestion/processEventBatch.ts#L400-L464)
+
+```mermaid
+flowchart LR
+    Errors["validationErrors +<br/>authenticationErrors"] --> Map["errors.forEach()"]
+    Results["sortedBatch (성공)"] --> MapR["results.forEach()"]
+
+    Map --> E400["InvalidRequestError → 400"]
+    Map --> E401["UnauthorizedError → 401"]
+    Map --> E404["LangfuseNotFoundError → 404"]
+    Map --> E500["기타 → 500"]
+
+    MapR --> S201["status: 201"]
+
+    E400 --> Resp["{ successes: [...], errors: [...] }"]
+    S201 --> Resp
+```
+
+최종 HTTP 응답은 **207 Multi-Status**: 배치 내 각 이벤트별로 성공(201)/실패(400/401/404/500) 상태를 개별적으로 보고합니다.
+
+---
+
+## 환경변수 전체 정리
+
+| 환경변수 | 기본값 | 설명 | 커스터마이징 |
+|---|---|---|---|
+| `LANGFUSE_S3_EVENT_UPLOAD_BUCKET` | — | 이벤트 S3 버킷 | **필수** 설정 |
+| `LANGFUSE_S3_EVENT_UPLOAD_ENDPOINT` | — | S3 엔드포인트 (MinIO 등) | 사내 스토리지 주소 |
+| `LANGFUSE_S3_EVENT_UPLOAD_PREFIX` | `""` | S3 키 prefix | 멀티 테넌트 분리용 |
+| `LANGFUSE_S3_EVENT_UPLOAD_FORCE_PATH_STYLE` | `"false"` | Path-style 강제 | MinIO시 `"true"` |
+| `LANGFUSE_S3_EVENT_UPLOAD_SSE` | — | Server-Side Encryption | `"aws:kms"` |
+| `LANGFUSE_INGESTION_QUEUE_DELAY_MS` | `5000` | 큐 딜레이 (ms) | 순서 보장 vs 지연 트레이드오프 |
+| `LANGFUSE_SKIP_S3_LIST_FOR_OBSERVATIONS_PROJECT_IDS` | — | S3 List 생략 프로젝트 | 고성능 프로젝트 최적화 |
 
 ---
 
 ## 다음 문서
 
-이 단계에서 Redis에 적재된 Job이 워커(Worker)에서 어떻게 소비되는지는 👉 [11 Worker Source Breakdown](./11-worker-source-breakdown.md)에서 이어집니다.
+이 단계에서 Redis 큐에 적재된 Job이 워커에서 어떻게 소비·병합·적재되는지는 👉 [11 Worker Source Breakdown](./11-worker-source-breakdown.md)에서 이어집니다.
