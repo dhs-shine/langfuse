@@ -1,6 +1,7 @@
 import { type Flag } from "@/src/features/feature-flags/types";
 import { type ProjectScope } from "@/src/features/rbac/constants/projectAccessRights";
 import {
+  BellRing,
   Database,
   LayoutDashboard,
   LifeBuoy,
@@ -126,6 +127,17 @@ export const ROUTES: Route[] = [
     section: RouteSection.Main,
   },
   {
+    title: "Monitors",
+    pathname: "/project/[projectId]/monitors",
+    icon: BellRing,
+    projectRbacScopes: ["monitors:read"],
+    featureFlag: "monitors",
+    show: ({ isLangfuseCloud }) => isLangfuseCloud,
+    group: RouteGroup.Observability,
+    section: RouteSection.Main,
+    label: "Beta",
+  },
+  {
     title: "Prompts",
     pathname: "/project/[projectId]/prompts",
     icon: FileJson,
@@ -181,7 +193,6 @@ export const ROUTES: Route[] = [
     featureFlag: "experimentsV4Enabled",
     group: RouteGroup.Evaluation,
     section: RouteSection.Main,
-    label: "Beta",
   },
   {
     title: "Upgrade",

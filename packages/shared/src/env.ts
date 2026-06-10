@@ -42,6 +42,9 @@ const EnvSchema = z.object({
   REDIS_TLS_HONOR_CIPHER_ORDER: z.enum(["true", "false"]).optional(),
   REDIS_TLS_KEY_PASSPHRASE: z.string().optional(),
   REDIS_ENABLE_AUTO_PIPELINING: z.enum(["true", "false"]).default("true"),
+  LANGFUSE_BULLMQ_SKIP_REDIS_VERSION_CHECK: z
+    .enum(["true", "false"])
+    .default("false"),
   // Redis Cluster Configuration
   REDIS_CLUSTER_ENABLED: z.enum(["true", "false"]).default("false"),
   REDIS_CLUSTER_NODES: z.string().optional(),
@@ -241,6 +244,7 @@ const EnvSchema = z.object({
     .default("true"),
   LANGFUSE_USE_GOOGLE_CLOUD_STORAGE: z.enum(["true", "false"]).default("false"),
   LANGFUSE_GOOGLE_CLOUD_STORAGE_CREDENTIALS: z.string().optional(),
+  GOOGLE_CLOUD_UNIVERSE_DOMAIN: z.string().default("googleapis.com"),
   LANGFUSE_USE_OCI_NATIVE_OBJECT_STORAGE: z
     .enum(["true", "false"])
     .default("false"),
