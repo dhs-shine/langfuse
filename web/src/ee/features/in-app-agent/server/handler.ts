@@ -35,12 +35,20 @@ import {
   createRun,
   ensureOwnedConversation,
   finishRun,
+  getConversationEvents,
   getConversationMessagesForReplay,
+  isInAppAgentConversationWriteLocked,
   maybeInferAndPersistConversationTitle,
+  getSandboxToolCallFiles,
   replaceRunEvents,
   shouldFlushPersistedEvent,
   toPersistableAgentEvent,
 } from "@/src/ee/features/in-app-agent/server/persistence";
+import { createInAppAgentSandbox } from "@/src/ee/features/in-app-agent/server/sandbox";
+import {
+  createInAppAgentSandboxProvider,
+  getDefaultInAppAgentSandboxProviderType,
+} from "@/src/ee/features/in-app-agent/server/sandbox/config";
 import { getLangfuseClient } from "@/src/features/natural-language-filters/server/utils";
 import { getAuthOptions } from "@/src/server/auth";
 import { hasEntitlement } from "@/src/features/entitlements/server/hasEntitlement";
@@ -51,6 +59,7 @@ import {
 } from "@/src/features/public-api/server/RateLimitService";
 import { getLangfuseAITraceSinkParams } from "@/src/features/ai-features/server/bedrockCompletion";
 import { isProjectMemberOrAdmin } from "@/src/server/utils/checkProjectMembershipOrAdmin";
+import { getProductBaseUrl } from "@/src/utils/base-url";
 import { assertUnreachable } from "@/src/utils/types";
 import {
   BaseError,
@@ -73,6 +82,8 @@ import {
 
 const IN_APP_AGENT_API_KEY_NOTE = "In-app agent MCP session";
 const MAX_IN_APP_AGENT_INPUT_BYTES = 1024 * 1024;
+const SANDBOX_CONVERSATION_WRITE_LOCK_MESSAGE =
+  "Sandbox-enabled conversations become read-only after 8 hours. Start a new conversation to continue.";
 
 export default async function handler(request: Request) {
   try {
@@ -241,6 +252,25 @@ export default async function handler(request: Request) {
       conversationId,
       userId: userId,
     });
+    const conversationEvents = await getConversationEvents({
+      prisma,
+      projectId,
+      conversationId: conversation.id,
+    });
+
+    if (
+      isInAppAgentConversationWriteLocked({
+        conversation,
+        events: conversationEvents,
+      })
+    ) {
+      throw new BaseError(
+        "PreconditionFailedError",
+        412,
+        SANDBOX_CONVERSATION_WRITE_LOCK_MESSAGE,
+        true,
+      );
+    }
 
     if (isResumeAgentInput(sanitizedInput)) {
       await validatePendingToolApproval({
@@ -262,6 +292,36 @@ export default async function handler(request: Request) {
     const resumeApprovalRequest = isResumeAgentInput(sanitizedInput)
       ? sanitizedInput.forwardedProps.command.resume.approvalRequest
       : undefined;
+    const sandboxProviderType = getDefaultInAppAgentSandboxProviderType();
+    const sandboxProvider =
+      await getInAppAgentSandboxProvider(sandboxProviderType);
+    const sandboxState = sandboxProvider
+      ? await createInAppAgentSandbox({
+          conversationId: conversation.id,
+          projectId,
+          providerSessionId: conversation.providerSessionId,
+          provider: sandboxProvider,
+          getToolCallFiles: async () =>
+            getSandboxToolCallFiles(conversationEvents),
+          saveState: async (state) => {
+            await prisma.inAppAgentConversation.update({
+              where: {
+                id_projectId: {
+                  id: conversation.id,
+                  projectId,
+                },
+              },
+              data: state,
+            });
+          },
+        })
+      : undefined;
+
+    const approvedResumeApprovalRequest =
+      isResumeAgentInput(sanitizedInput) &&
+      sanitizedInput.forwardedProps.command.resume.approved
+        ? sanitizedInput.forwardedProps.command.resume.approvalRequest
+        : undefined;
 
     return await withInAppAgentMcpApiKeyCleanup(
       {
@@ -269,7 +329,7 @@ export default async function handler(request: Request) {
         runId: sanitizedInput.runId,
         userId,
         toolName: getInAppAgentMcpRegistryToolName(
-          resumeApprovalRequest?.toolName,
+          approvedResumeApprovalRequest?.toolName,
         ),
       },
       async (mcpApiKey, runOverride, cleanupMcpApiKey) => {
@@ -281,7 +341,7 @@ export default async function handler(request: Request) {
         const restorePendingToolApprovalIfRetryable = () => {
           if (
             !pendingToolApprovalConsumed ||
-            !resumeApprovalRequest ||
+            !approvedResumeApprovalRequest ||
             approvedToolResultPersisted
           ) {
             return;
@@ -290,7 +350,7 @@ export default async function handler(request: Request) {
           return storePendingToolApproval({
             projectId,
             conversationId: conversation.id,
-            approvalRequest: resumeApprovalRequest,
+            approvalRequest: approvedResumeApprovalRequest,
           });
         };
 
@@ -434,7 +494,11 @@ export default async function handler(request: Request) {
                           : "Unknown agent error",
                     }),
                   ),
-              onFinish: cleanupMcpApiKey,
+              sandbox: sandboxState?.sandbox,
+              onFinish: async () => {
+                await cleanupMcpApiKey();
+                await sandboxState?.onTurnEnded();
+              },
               awsBedrock: {
                 region: env.LANGFUSE_AWS_BEDROCK_REGION,
                 modelId: bedrockModelId,
@@ -471,6 +535,10 @@ export default async function handler(request: Request) {
                     langfuse_ai_feature: "in-app-agent",
                     langfuse_user_id: userId,
                     langfuse_project_id: projectId,
+                    langfuse_project_url: new URL(
+                      `project/${encodeURIComponent(projectId)}`,
+                      getProductBaseUrl(),
+                    ).toString(),
                     conversation_id: conversation.id,
                     thread_id: sanitizedInput.threadId,
                     run_id: sanitizedInput.runId,
@@ -539,6 +607,25 @@ export default async function handler(request: Request) {
 
     throw err;
   }
+}
+
+async function getInAppAgentSandboxProvider(
+  providerType: ReturnType<typeof getDefaultInAppAgentSandboxProviderType>,
+) {
+  if (providerType === null || env.NODE_ENV === "test") {
+    return undefined;
+  }
+
+  if (providerType === "dangerous-docker") {
+    logger.warn(
+      "Using dangerous-docker in-app agent sandbox provider. This is for local development only.",
+    );
+    logger.warn(
+      "The dangerous-docker sandbox provider executes commands in a local Docker container and should not be enabled in production.",
+    );
+  }
+
+  return createInAppAgentSandboxProvider(providerType);
 }
 
 type SessionUser = NonNullable<Session["user"]>;
@@ -628,7 +715,12 @@ function createInAppAgentRateLimitResponse(rateLimitRes: RateLimitResult) {
   }
 
   return Response.json(
-    { error: "Rate limit exceeded" },
+    {
+      code: "rate_limited",
+      details: {
+        retryAfterSeconds: Math.ceil(rateLimitRes.msBeforeNext / 1_000),
+      },
+    },
     { status: 429, headers },
   );
 }
@@ -732,7 +824,10 @@ async function cleanupInAppAgentMcpApiKey(params: {
   });
 }
 
-type SanitizedAgentInput = AgUiRunAgentInput &
+type SanitizedAgentInput = Omit<
+  AgUiRunAgentInput,
+  "messages" | "forwardedProps"
+> &
   (
     | {
         messages: [SanitizedUserMessage];
@@ -757,7 +852,7 @@ function sanitizeAgentInput(
   input: AgUiRunAgentInput,
   projectId: string,
 ): SanitizedAgentInput {
-  const forwardedProps = input.forwardedProps;
+  const forwardedProps: unknown = input.forwardedProps;
 
   if (
     forwardedProps !== undefined &&
