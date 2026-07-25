@@ -50,6 +50,14 @@ sequenceDiagram
     IS->>CH: ClickhouseWriter.addToQueue() → Batch INSERT
 ```
 
+> **분석 대상 소스**:
+> | 파일 | 줄 수 | 역할 |
+> |---|---|---|
+> | [`web/src/pages/api/public/ingestion.ts`](file:///Users/dhsshin/Documents/LLMOps/langfuse/web/src/pages/api/public/ingestion.ts) | ~287 | HTTP 진입점, 인증·Rate Limit, V4 이벤트 필터링 |
+> | [`packages/shared/src/server/ingestion/processEventBatch.ts`](file:///Users/dhsshin/Documents/LLMOps/langfuse/packages/shared/src/server/ingestion/processEventBatch.ts) | ~525 | 핵심 비즈니스 로직 전체 |
+> | [`packages/shared/src/server/ingestion/types.ts`](file:///Users/dhsshin/Documents/LLMOps/langfuse/packages/shared/src/server/ingestion/types.ts) | — | Zod 이벤트 스키마 팩토리 |
+> | [`packages/shared/src/server/ingestion/sampling.ts`](file:///Users/dhsshin/Documents/LLMOps/langfuse/packages/shared/src/server/ingestion/sampling.ts) | — | 샘플링 결정 로직 |
+
 ## 1단계: 진입점 — Next.js API Route
 
 🔗 [`web/src/pages/api/public/ingestion.ts`](file:///Users/dhsshin/Documents/LLMOps/langfuse/web/src/pages/api/public/ingestion.ts)
@@ -59,7 +67,8 @@ sequenceDiagram
 | 1 | `ApiAuthService.verifyAuthHeaderAndReturnScope()` | API Key 검증, projectId 추출, 이용 중단(suspend) 여부 확인 |
 | 2 | `RateLimitService.rateLimitRequest()` | 프로젝트별 초당 수집 한도 확인 (Fail-open) |
 | 3 | `batchType.safeParse(req.body)` | Zod로 요청 본문 구조 검증 |
-| 4 | `processEventBatch()` | 핵심 비즈니스 로직 위임 |
+| 4 | `filterBatchForEventsOnly()` | V4 `events_only` 모드 시 trace/observation 이벤트를 거부 (Score/SDK Log만 통과) |
+| 5 | `processEventBatch()` | 핵심 비즈니스 로직 위임 (`createIngestionAttribution()`으로 SDK 귀속 정보 전달) |
 
 ## 2단계: 비동기 분기 — S3 캐싱 + BullMQ 큐
 
@@ -105,6 +114,8 @@ flowchart TD
 | 3 | `s3Client.download()` | S3에서 JSON 파일 다운로드 (병렬 chunk) |
 | 4 | `IngestionService.mergeAndWrite()` | 기존 ClickHouse 레코드와 병합 후 메모리 버퍼에 추가 |
 | 5 | `ClickhouseWriter.flush()` | 주기적으로 메모리 버퍼를 Batch INSERT |
+
+> **V4 전환 지원**: 워커는 `v4WritesToEventsTable()` 함수를 통해 `events_full` 테이블에 이중 기록 여부를 동적으로 결정합니다.
 
 ---
 

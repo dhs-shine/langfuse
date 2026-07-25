@@ -5,16 +5,16 @@
 > **분석 대상 소스**:
 > | 파일 | 줄 수 | 역할 |
 > |---|---|---|
-> | [`worker/src/queues/ingestionQueue.ts`](file:///Users/dhsshin/Documents/LLMOps/langfuse/worker/src/queues/ingestionQueue.ts) | 306 | BullMQ Processor — Job Dequeue부터 ClickHouse까지 |
-> | [`worker/src/queues/workerManager.ts`](file:///Users/dhsshin/Documents/LLMOps/langfuse/worker/src/queues/workerManager.ts) | 187 | 워커 등록, 메트릭 래핑, 에러 핸들링 |
-> | [`worker/src/services/ClickhouseWriter/index.ts`](file:///Users/dhsshin/Documents/LLMOps/langfuse/worker/src/services/ClickhouseWriter/index.ts) | 643 | 메모리 버퍼 + Batch Insert + 에러 복구 |
-> | [`worker/src/services/IngestionService/index.ts`](file:///Users/dhsshin/Documents/LLMOps/langfuse/worker/src/services/IngestionService/index.ts) | 1736 | 이벤트 병합, 모델/토큰 enrichment |
+> | [`worker/src/queues/ingestionQueue.ts`](file:///Users/dhsshin/Documents/LLMOps/langfuse/worker/src/queues/ingestionQueue.ts) | ~358 | BullMQ Processor — Job Dequeue부터 ClickHouse까지 |
+> | [`worker/src/queues/workerManager.ts`](file:///Users/dhsshin/Documents/LLMOps/langfuse/worker/src/queues/workerManager.ts) | ~247 | 워커 등록, 메트릭 래핑, 에러 핸들링 |
+> | [`worker/src/services/ClickhouseWriter/index.ts`](file:///Users/dhsshin/Documents/LLMOps/langfuse/worker/src/services/ClickhouseWriter/index.ts) | ~640 | 메모리 버퍼 + Batch Insert + 에러 복구 |
+> | [`worker/src/services/IngestionService/index.ts`](file:///Users/dhsshin/Documents/LLMOps/langfuse/worker/src/services/IngestionService/index.ts) | ~1935 | 이벤트 병합, 모델/토큰 enrichment |
 
 ---
 
 ## 워커 전체 의사결정 플로우차트
 
-`ingestionQueueProcessorBuilder`의 return 함수(L36-304) 내부의 **모든 분기를 누락 없이** 매핑한 플로우차트입니다.
+`ingestionQueueProcessorBuilder`의 return 함수 내부의 **모든 분기를 누락 없이** 매핑한 플로우차트입니다.
 
 ```mermaid
 flowchart TD
@@ -62,9 +62,9 @@ flowchart TD
 
 ---
 
-## Phase 1: BlobStorageFileLog 기록 (L62-81)
+## Phase 1: BlobStorageFileLog 기록
 
-🔗 [`ingestionQueue.ts` L62](file:///Users/dhsshin/Documents/LLMOps/langfuse/worker/src/queues/ingestionQueue.ts#L62-L81)
+🔗 [`ingestionQueue.ts` — BlobStorageFileLog 기록](file:///Users/dhsshin/Documents/LLMOps/langfuse/worker/src/queues/ingestionQueue.ts)
 
 ```typescript
 if (env.LANGFUSE_ENABLE_BLOB_STORAGE_FILE_LOG === "true" && fileKey) {
@@ -86,9 +86,9 @@ if (env.LANGFUSE_ENABLE_BLOB_STORAGE_FILE_LOG === "true" && fileKey) {
 
 ---
 
-## Phase 2: Redis 중복 방지 캐시 (L84-106)
+## Phase 2: Redis 중복 방지 캐시
 
-🔗 [`ingestionQueue.ts` L84](file:///Users/dhsshin/Documents/LLMOps/langfuse/worker/src/queues/ingestionQueue.ts#L84-L106)
+🔗 [`ingestionQueue.ts` — Redis 중복 캐시](file:///Users/dhsshin/Documents/LLMOps/langfuse/worker/src/queues/ingestionQueue.ts)
 
 ```mermaid
 flowchart LR
@@ -112,9 +112,9 @@ flowchart LR
 
 ---
 
-## Phase 3: Secondary Queue 릴레이 (L108-133)
+## Phase 3: Secondary Queue 릴레이
 
-🔗 [`ingestionQueue.ts` L108](file:///Users/dhsshin/Documents/LLMOps/langfuse/worker/src/queues/ingestionQueue.ts#L108-L133)
+🔗 [`ingestionQueue.ts` — Secondary Queue 릴레이](file:///Users/dhsshin/Documents/LLMOps/langfuse/worker/src/queues/ingestionQueue.ts)
 
 ```mermaid
 flowchart TD
@@ -135,9 +135,9 @@ flowchart TD
 
 ---
 
-## Phase 4: S3 파일 다운로드 (L149-206)
+## Phase 4: S3 파일 다운로드
 
-🔗 [`ingestionQueue.ts` L149](file:///Users/dhsshin/Documents/LLMOps/langfuse/worker/src/queues/ingestionQueue.ts#L149-L206)
+🔗 [`ingestionQueue.ts` — S3 다운로드 로직](file:///Users/dhsshin/Documents/LLMOps/langfuse/worker/src/queues/ingestionQueue.ts)
 
 ```mermaid
 flowchart TD
@@ -164,9 +164,9 @@ flowchart TD
 
 ---
 
-## Phase 5: IngestionService.mergeAndWrite (1736줄의 핵심)
+## Phase 5: IngestionService.mergeAndWrite (~1935줄의 핵심)
 
-🔗 [`IngestionService/index.ts` L149](file:///Users/dhsshin/Documents/LLMOps/langfuse/worker/src/services/IngestionService/index.ts#L149-L195)
+🔗 [`IngestionService/index.ts` — `mergeAndWrite()`](file:///Users/dhsshin/Documents/LLMOps/langfuse/worker/src/services/IngestionService/index.ts#L177)
 
 ```mermaid
 flowchart TD
@@ -208,13 +208,14 @@ flowchart TD
 
 **이벤트 병합 규칙 (Immutable Keys)**:
 
-🔗 [`IngestionService/index.ts` L86](file:///Users/dhsshin/Documents/LLMOps/langfuse/worker/src/services/IngestionService/index.ts#L86-L135)
+🔗 [`IngestionService/index.ts` — `immutableEntityKeys`](file:///Users/dhsshin/Documents/LLMOps/langfuse/worker/src/services/IngestionService/index.ts#L114)
 
 ```typescript
 const immutableEntityKeys = {
   [TableName.Traces]:       ["id", "project_id", "timestamp", "created_at", "environment"],
   [TableName.Scores]:       ["id", "project_id", "timestamp", "trace_id", "created_at", "environment"],
   [TableName.Observations]: ["id", "project_id", "trace_id", "start_time", "created_at", "environment"],
+  [TableName.DatasetRunItems]: ["id", "project_id", ...],  // Update 미수용
 };
 ```
 
@@ -224,7 +225,7 @@ const immutableEntityKeys = {
 
 ## Phase 6: ClickhouseWriter — 메모리 버퍼 & Flush
 
-🔗 [`ClickhouseWriter/index.ts` L32](file:///Users/dhsshin/Documents/LLMOps/langfuse/worker/src/services/ClickhouseWriter/index.ts#L32-L96)
+🔗 [`ClickhouseWriter/index.ts` — `ClickhouseWriter` 클래스](file:///Users/dhsshin/Documents/LLMOps/langfuse/worker/src/services/ClickhouseWriter/index.ts#L34)
 
 ### 싱글톤 아키텍처
 
@@ -302,9 +303,9 @@ flowchart TD
     Drop --> DropMetric["recordIncrement(rows_dropped)<br/>logger.error: dropped IDs 기록"]
 ```
 
-### Decimal64 오버플로 방어 (L280-354)
+### Decimal64 오버플로 방어
 
-🔗 [`ClickhouseWriter/index.ts` L280](file:///Users/dhsshin/Documents/LLMOps/langfuse/worker/src/services/ClickhouseWriter/index.ts#L280-L354)
+🔗 [`ClickhouseWriter/index.ts` — `clampDecimal64Fields()`](file:///Users/dhsshin/Documents/LLMOps/langfuse/worker/src/services/ClickhouseWriter/index.ts)
 
 ```typescript
 const DECIMAL_64_12_LIMIT = new Decimal("1e6");  // 999,999.999999999999 까지만 허용
@@ -331,7 +332,7 @@ ClickHouse의 `Decimal64(12)` 타입은 범위가 제한적(-10^6 ~ 10^6)입니�
 
 ## WorkerManager — 메트릭 자동 수집
 
-🔗 [`workerManager.ts` L41](file:///Users/dhsshin/Documents/LLMOps/langfuse/worker/src/queues/workerManager.ts#L41-L110)
+🔗 [`workerManager.ts` — `metricWrapper()`](file:///Users/dhsshin/Documents/LLMOps/langfuse/worker/src/queues/workerManager.ts)
 
 `metricWrapper`가 모든 Job 처리를 감싸서 **자동으로 수집하는 메트릭 목록**:
 

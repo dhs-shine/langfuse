@@ -67,7 +67,7 @@ flowchart TD
 
 ## 큐 스키마 및 계약 (Payload Contracts)
 
-🔗 [`packages/shared/src/server/queues.ts`](file:///Users/dhsshin/Documents/LLMOps/langfuse/packages/shared/src/server/queues.ts) — 568줄
+🔗 [`packages/shared/src/server/queues.ts`](file:///Users/dhsshin/Documents/LLMOps/langfuse/packages/shared/src/server/queues.ts) — ~633줄
 
 `web`(프로듀서)과 `worker`(컨슈머) 간의 페이로드 계약은 모두 이 파일에 **Zod 스키마**로 정의되어 있습니다.
 
@@ -76,18 +76,37 @@ flowchart TD
 | `IngestionQueue` | `IngestionEvent` | SDK/API로부터의 메인 이벤트 파이프라인 |
 | `OtelIngestionQueue` | `OtelIngestionEvent` | OpenTelemetry 프로토콜 이벤트 |
 | `IngestionSecondaryQueue` | `IngestionEvent` (동일) | S3 Slowdown 프로젝트 격리 |
+| `OtelIngestionSecondaryQueue` | `OtelIngestionEvent` (동일) | OTel 고처리량 프로젝트 격리 |
 | `EvaluationExecution` | `EvalExecutionEvent` | LLM-as-a-judge 평가 실행 |
-| `LLMAsJudgeExecution` | `LLMAsJudgeExecutionEventSchema` | Observation 기반 평가 |
+| `EvaluationExecutionSecondaryQueue` | `EvalExecutionEvent` (동일) | 평가 고처리량 프로젝트 격리 |
+| `LLMAsJudgeExecution` | `ObservationEvalExecutionEventSchema` | Observation 기반 LLM 평가 |
+| `CodeEvalExecution` | `ObservationEvalExecutionEventSchema` | Observation 기반 코드 평가 |
+| `CreateEvalQueue` | `CreateEvalQueueEventSchema` | 평가 생성 트리거 |
 | `BatchExport` | `BatchExportJobSchema` | 대용량 S3 내보내기 |
-| `DataRetentionQueue` | `DataRetentionProcessingEventSchema` | TTL 만료 데이터 삭제 |
+| `DataRetentionQueue` / `DataRetentionProcessingQueue` | `DataRetentionProcessingEventSchema` | TTL 만료 데이터 삭제 |
 | `TraceUpsert` | `TraceQueueEventSchema` | 트레이스 업서트 → 평가 트리거 |
+| `TraceDelete` | `TracesQueueEventType \| TraceQueueEventType` | 트레이스 삭제 처리 |
+| `ScoreDelete` | `ScoresQueueEventSchema` | 스코어 삭제 처리 |
+| `DatasetDelete` | `DatasetQueueEventSchema` | 데이터셋 삭제 처리 |
+| `ProjectDelete` | `ProjectQueueEventSchema` | 프로젝트 삭제 처리 |
+| `DatasetRunItemUpsert` | `DatasetRunItemUpsertEventSchema` | 데이터셋 런 아이템 업서트 |
+| `BatchActionQueue` | `BatchActionProcessingEventSchema` | 배치 액션 (9가지 variant) |
 | `WebhookQueue` | `WebhookInputSchema` | 외부 웹훅 발송 |
+| `EntityChangeQueue` | `EntityChangeEventSchema` | 엔티티 변경 이벤트 |
+| `EventPropagationQueue` | — | 이벤트 전파 |
 | `NotificationQueue` | `NotificationEventSchema` | 댓글 멘션 등 사내 알림 |
+| `MonitorQueue` | `MonitorQueueEventInput` | 모니터링 스케줄러 |
+| `ExperimentCreate` | `ExperimentCreateEventSchema` | 실험 생성 |
+| `PostHogIntegrationProcessingQueue` | `PostHogIntegrationProcessingEventSchema` | PostHog 연동 |
+| `MixpanelIntegrationProcessingQueue` | `MixpanelIntegrationProcessingEventSchema` | Mixpanel 연동 |
+| `BlobStorageIntegrationProcessingQueue` | `BlobStorageIntegrationProcessingEventSchema` | Blob 스토리지 연동 |
 | `DeadLetterRetryQueue` | `DeadLetterRetryQueueEventSchema` | 실패 Job 수집 |
+
+> **참고**: 위 테이블은 핵심 큐만 선별한 것입니다. 전체 38개 큐의 전수 목록은 `QueueName` enum을 직접 참조하세요.
 
 ## Worker 아키텍처
 
-🔗 [`worker/src/queues/workerManager.ts`](file:///Users/dhsshin/Documents/LLMOps/langfuse/worker/src/queues/workerManager.ts)
+🔗 [`worker/src/queues/workerManager.ts`](file:///Users/dhsshin/Documents/LLMOps/langfuse/worker/src/queues/workerManager.ts) — ~247줄
 
 ```mermaid
 classDiagram
@@ -135,7 +154,7 @@ Worker 노드는 상태를 갖지 않으며(Stateless), Redis에만 의존하므
 
 ### Retry Baggage
 
-🔗 [`queues.ts` L219-221](file:///Users/dhsshin/Documents/LLMOps/langfuse/packages/shared/src/server/queues.ts#L219-L221)
+🔗 [`queues.ts` — `RetryBaggage` 정의](file:///Users/dhsshin/Documents/LLMOps/langfuse/packages/shared/src/server/queues.ts#L363-L366)
 
 ```typescript
 export const RetryBaggage = z.object({

@@ -26,7 +26,9 @@ langfuse/
 ├─ ee/                      # Enterprise 에디션 전용 기능 (SSO 연동, 고급 감사 로그 등)
 ├─ generated/               # Fern을 통해 자동 생성된 API 클라이언트 (직접 수정 금지)
 ├─ fern/                    # REST API 명세 정의 파일 소스
-└─ scripts/                 # 개발 및 배포 환경 세팅 스크립트
+├─ specs/                   # 기능 스펙 및 설계 문서
+├─ scripts/                 # 개발 및 배포 환경 세팅 스크립트
+└─ vitest.workspace.ts      # Vitest 워크스페이스 설정 (테스트 실행 환경 통합)
 ```
 
 ## 의존성 규칙 (Dependency Rules)
@@ -65,3 +67,4 @@ flowchart TD
 - **타입 검사**: `pnpm run typecheck` (`pnpm tc`)
 - **DB 스키마 생성**: `pnpm run db:generate` (Prisma 스키마 변경 시 필수 실행)
 - **API 클라이언트 생성**: Fern 정의 변경 시 자동화 파이프라인을 통해 생성되며 `generated/` 폴더는 직접 수정하지 않습니다.
+- **테스트 실행**: `pnpm --filter web run test <file>` (web 서버 테스트), `pnpm --filter worker run test <file>` (워커 테스트), `pnpm --filter @langfuse/shared run test <file>` (shared 테스트). Vitest 기반으로 파일명 필터링을 지원합니다.

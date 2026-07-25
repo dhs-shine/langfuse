@@ -40,7 +40,11 @@ ClickHouse는 대용량 시계열(Time-series) 데이터와 고차원(High-cardi
 - **`traces`**: 단일 사용자 요청이나 워크플로우 단위.
 - **`observations`**: 개별 LLM 호출, span 분기, 이벤트 기록. (가장 데이터 볼륨이 큼)
 - **`scores`**: 특정 Trace나 Observation에 대해 사람이 평가하거나(Human Eval) 자동 평가(LLM-as-a-judge)된 점수 기록.
-- **Materialized Views (`analytics_traces`, `analytics_observations` 등)**: 
+- **`events_full`**: V4 아키텍처 전용 이벤트 테이블. Trace/Observation/Score 등의 원본 이벤트를 통합 저장하며, 기존 개별 테이블 기반의 레거시 구조를 대체하는 역할. `v4WritesToEventsTable()` 환경 함수에 의해 쓰기 여부가 결정됨.
+- **`observations_batch_staging`**: 워커의 배치 처리 과정에서 Observation을 스테이징하는 중간 테이블.
+- **`blob_storage_file_log`**: S3에 저장된 이벤트 파일의 메타데이터(경로, 프로젝트, 엔티티 ID 등)를 기록. 데이터 보존(Retention) 만료 시 S3 파일 일괄 삭제에 활용.
+- **`dataset_run_items`**: 데이터셋 런 아이템의 ClickHouse 레플리카.
+- **Materialized Views (`traces_all_amt`, `traces_7d_amt`, `traces_30d_amt` 등)**: 
   - 읽기 쿼리를 최적화하기 위해, 원본 데이터가 Insert될 때 백그라운드에서 실시간으로 AggregatingMergeTree 등을 사용해 지표를 미리 집계(Roll-up)해두는 뷰입니다.
 
 ```mermaid

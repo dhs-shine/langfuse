@@ -70,9 +70,10 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-    Root["appRouter"] --> Trace["traceRouter"]
+    Root["appRouter<br/>(63개 라우터)"] --> Trace["traceRouter"]
     Root --> Obs["observationsRouter"]
     Root --> Score["scoreRouter"]
+    Root --> ScoreAnalytics["scoreAnalyticsRouter"]
     Root --> Session["sessionRouter"]
     Root --> Project["projectRouter"]
     Root --> Model["modelRouter"]
@@ -80,16 +81,33 @@ flowchart TD
     Root --> Dataset["datasetRouter"]
     Root --> Eval["evalRouter"]
     Root --> Dashboard["dashboardRouter"]
+    Root --> DashboardWidget["dashboardWidgetRouter"]
     Root --> BatchExport["batchExportRouter"]
+    Root --> BatchAction["batchActionRouter"]
+    Root --> Experiments["experimentsRouter"]
+    Root --> AQ["annotationQueues/Items/Assignments"]
+    Root --> Automations["automationsRouter"]
+    Root --> Monitors["monitorsRouter"]
+    Root --> Comments["comments/commentReactions"]
+    Root --> Media["mediaRouter"]
+    Root --> LLM["llmApiKey/llmSchemas/llmTools"]
+    Root --> Orgs["organizations/organizationApiKeys"]
+    Root --> Integrations["posthog/mixpanel/blobStorage"]
+    Root --> V4["v4TransitionRouter"]
+    Root --> More["...외 다수"]
 
-    Trace --> T_All["all (query)"]
-    Trace --> T_Count["countAll (query)"]
-    Trace --> T_Metrics["metrics (query)"]
-    Trace --> T_ById["byId (query)"]
-    Trace --> T_Detail["byIdWithObservationsAndScores (query)"]
-    Trace --> T_Delete["deleteMany (mutation)"]
-    Trace --> T_Bookmark["bookmark (mutation)"]
+    Trace --> T_All["all"]
+    Trace --> T_Count["countAll"]
+    Trace --> T_Metrics["metrics"]
+    Trace --> T_ById["byId"]
+    Trace --> T_Detail["byIdWithObservationsAndScores"]
+    Trace --> T_Delete["deleteMany"]
+    Trace --> T_Bookmark["bookmark"]
+    Trace --> T_Publish["publish"]
+    Trace --> T_Agent["getAgentGraphData"]
 ```
+
+> **참고**: 전체 63개 라우터 목록은 [`web/src/server/api/root.ts`](file:///Users/dhsshin/Documents/LLMOps/langfuse/web/src/server/api/root.ts)의 `appRouter` 정의를 직접 참조하세요.
 
 ## 병렬 데이터 패칭 패턴
 
@@ -97,7 +115,7 @@ Langfuse의 tRPC 라우터에서 반복적으로 나타나는 핵심 패턴은 *
 
 ### 예시 1: `traceRouter.metrics`
 
-🔗 [`traces.ts` L180-261](file:///Users/dhsshin/Documents/LLMOps/langfuse/web/src/server/api/routers/traces.ts#L180-L261)
+🔗 [`traces.ts` — `traceRouter.metrics` 프로시저](file:///Users/dhsshin/Documents/LLMOps/langfuse/web/src/server/api/routers/traces.ts#L204)
 
 ```mermaid
 flowchart LR
@@ -121,7 +139,7 @@ flowchart LR
 
 ### 예시 2: `traceRouter.filterOptions`
 
-🔗 [`traces.ts` L279-315](file:///Users/dhsshin/Documents/LLMOps/langfuse/web/src/server/api/routers/traces.ts#L279-L315)
+🔗 [`traces.ts` — `traceRouter.filterOptions` 프로시저](file:///Users/dhsshin/Documents/LLMOps/langfuse/web/src/server/api/routers/traces.ts#L286)
 
 ```typescript
 const [numericScoreNames, categoricalScoreNames, traceNames, tags, userIds, sessionIds] =

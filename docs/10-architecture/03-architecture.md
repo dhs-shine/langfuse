@@ -128,3 +128,24 @@ Langfuse는 대규모 분석 및 관측 가능성을 위해 다음과 같은 핵
 2. **비동기 Ingestion**: 시스템 부하를 분산하기 위해 데이터 수집과 저장을 분리합니다. 
 3. **읽기 최적화 (Columnar DB)**: ClickHouse를 통해 대규모 데이터를 스캔하고 필터링하는 쿼리 성능을 극대화합니다. Join을 최소화하고 Denormalization을 적극 활용합니다.
 4. **Scale-aware API**: API는 무한 스캔을 방지하기 위해 기간(Time Windows) 제한 및 토큰 기반 페이지네이션을 필수적으로 적용합니다.
+
+## 2026-07 기준 주요 변경 사항
+
+### V4 마이그레이션 모드
+
+Langfuse는 `events_full` 테이블 기반의 새 V4 아키텍처로 전환 중이며, `LANGFUSE_MIGRATION_V4_WRITE_MODE` 환경변수를 통해 점진적 마이그레이션을 지원합니다.
+
+- **`events_only`** 모드: Ingestion API가 trace/observation 이벤트를 거부하고 Score/SDK Log만 수용. 레거시 ClickHouse 테이블에 쓰지 않는 배포에서 사용.
+- 이 필터링은 `ingestion.ts`의 `filterBatchForEventsOnly()` 함수에서 처리됩니다.
+
+### OpenTelemetry(OTel) 전용 진입점
+
+SDK 기반 Ingestion 외에, 표준 **OTel 프로토콜** 경로(`/api/public/otel/v1/traces`, `/api/public/otel/v1/metrics`)를 통한 데이터 수집을 지원합니다. OTel 이벤트는 별도의 `OtelIngestionQueue`를 거쳐 처리됩니다.
+
+### MCP (Model Context Protocol) 지원
+
+`/api/public/mcp/` 엔드포인트를 통해 MCP 프로토콜 통합을 지원합니다.
+
+### Ingestion Attribution
+
+수집 시 API 키, SDK 이름, SDK 버전 등의 **귀속 정보(Attribution)**가 큐 페이로드에 함께 전달되어, 어떤 SDK/클라이언트에서 어떤 이벤트를 보냈는지 추적할 수 있습니다.

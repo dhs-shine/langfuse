@@ -5,8 +5,8 @@
 > **분석 대상 소스**:
 > | 파일 | 줄 수 | 역할 |
 > |---|---|---|
-> | [`web/src/pages/api/public/ingestion.ts`](file:///Users/dhsshin/Documents/LLMOps/langfuse/web/src/pages/api/public/ingestion.ts) | ~175 | HTTP 진입점, 인증·Rate Limit |
-> | [`packages/shared/src/server/ingestion/processEventBatch.ts`](file:///Users/dhsshin/Documents/LLMOps/langfuse/packages/shared/src/server/ingestion/processEventBatch.ts) | 465 | 핵심 비즈니스 로직 전체 |
+> | [`web/src/pages/api/public/ingestion.ts`](file:///Users/dhsshin/Documents/LLMOps/langfuse/web/src/pages/api/public/ingestion.ts) | ~287 | HTTP 진입점, 인증·Rate Limit, V4 이벤트 필터링 |
+> | [`packages/shared/src/server/ingestion/processEventBatch.ts`](file:///Users/dhsshin/Documents/LLMOps/langfuse/packages/shared/src/server/ingestion/processEventBatch.ts) | ~525 | 핵심 비즈니스 로직 전체 |
 > | [`packages/shared/src/server/ingestion/types.ts`](file:///Users/dhsshin/Documents/LLMOps/langfuse/packages/shared/src/server/ingestion/types.ts) | — | Zod 이벤트 스키마 팩토리 |
 > | [`packages/shared/src/server/ingestion/sampling.ts`](file:///Users/dhsshin/Documents/LLMOps/langfuse/packages/shared/src/server/ingestion/sampling.ts) | — | 샘플링 결정 로직 |
 
@@ -77,9 +77,9 @@ sequenceDiagram
 
 ## Phase 1: 인증 및 사전 검증
 
-### 1.1 API Key 인증 — `ingestion.ts` L76-88
+### 1.1 API Key 인증 — `verifyAuthHeaderAndReturnScope()`
 
-🔗 [`ingestion.ts`](file:///Users/dhsshin/Documents/LLMOps/langfuse/web/src/pages/api/public/ingestion.ts#L76-L88)
+🔗 [`ingestion.ts` — API Key 검증](file:///Users/dhsshin/Documents/LLMOps/langfuse/web/src/pages/api/public/ingestion.ts#L83-L97)
 
 ```typescript
 const authCheck = await new ApiAuthService(prisma, redis)
@@ -113,9 +113,9 @@ flowchart TD
 
 ---
 
-### 1.2 Rate Limiting — `ingestion.ts` L103-116
+### 1.2 Rate Limiting — `rateLimitRequest()`
 
-🔗 [`ingestion.ts`](file:///Users/dhsshin/Documents/LLMOps/langfuse/web/src/pages/api/public/ingestion.ts#L103-L116)
+🔗 [`ingestion.ts` — Rate Limit 처리](file:///Users/dhsshin/Documents/LLMOps/langfuse/web/src/pages/api/public/ingestion.ts#L117-L131)
 
 ```mermaid
 flowchart LR
@@ -134,9 +134,9 @@ flowchart LR
 
 ## Phase 2: Zod 런타임 검증 및 정렬
 
-### 2.1 스키마 검증 — `processEventBatch.ts` L151-186
+### 2.1 스키마 검증 — `ingestionSchema.safeParse()`
 
-🔗 [`processEventBatch.ts` L151](file:///Users/dhsshin/Documents/LLMOps/langfuse/packages/shared/src/server/ingestion/processEventBatch.ts#L151-L186)
+🔗 [`processEventBatch.ts` — Zod 스키마 검증](file:///Users/dhsshin/Documents/LLMOps/langfuse/packages/shared/src/server/ingestion/processEventBatch.ts)
 
 ```mermaid
 flowchart TD
@@ -155,9 +155,9 @@ flowchart TD
     Filter2 -- No --> Batch["batch[] 에 추가"]
 ```
 
-**권한 검증 — `isAuthorized()` 함수** (L358-374):
+**권한 검증 — `isAuthorized()` 함수**:
 
-🔗 [`processEventBatch.ts` L358](file:///Users/dhsshin/Documents/LLMOps/langfuse/packages/shared/src/server/ingestion/processEventBatch.ts#L358-L374)
+🔗 [`processEventBatch.ts` — `isAuthorized()`](file:///Users/dhsshin/Documents/LLMOps/langfuse/packages/shared/src/server/ingestion/processEventBatch.ts)
 
 ```typescript
 const isAuthorized = (event, authScope): boolean => {
@@ -173,9 +173,9 @@ const isAuthorized = (event, authScope): boolean => {
 | `project` | ✅ | ✅ | ✅ |
 | `scores` | ✅ | ✅ | ❌ |
 
-### 2.2 이벤트 정렬 — `sortBatch()` (L379-398)
+### 2.2 이벤트 정렬 — `sortBatch()`
 
-🔗 [`processEventBatch.ts` L379](file:///Users/dhsshin/Documents/LLMOps/langfuse/packages/shared/src/server/ingestion/processEventBatch.ts#L379-L398)
+🔗 [`processEventBatch.ts` — `sortBatch()`](file:///Users/dhsshin/Documents/LLMOps/langfuse/packages/shared/src/server/ingestion/processEventBatch.ts)
 
 ```typescript
 const sortBatch = (batch) => {
@@ -205,9 +205,9 @@ flowchart LR
 
 > **왜 이 순서가 중요한가?**: ClickHouse에서 `mergeAndWrite`로 이벤트를 병합할 때, Create 이벤트가 먼저 처리되어야 기본 필드(id, project_id 등)가 설정되고, 이후 Update가 추가 필드만 덮어쓸 수 있습니다.
 
-### 2.3 eventBodyId 그룹핑 — L192-221
+### 2.3 eventBodyId 그룹핑
 
-🔗 [`processEventBatch.ts` L192](file:///Users/dhsshin/Documents/LLMOps/langfuse/packages/shared/src/server/ingestion/processEventBatch.ts#L192-L221)
+🔗 [`processEventBatch.ts` — eventBodyId 그룹핑 로직](file:///Users/dhsshin/Documents/LLMOps/langfuse/packages/shared/src/server/ingestion/processEventBatch.ts)
 
 ```mermaid
 flowchart LR
@@ -225,9 +225,9 @@ flowchart LR
 
 ## Phase 3: S3 업로드 및 SlowDown 방어
 
-### 3.1 S3 업로드 — L226-265
+### 3.1 S3 업로드
 
-🔗 [`processEventBatch.ts` L226](file:///Users/dhsshin/Documents/LLMOps/langfuse/packages/shared/src/server/ingestion/processEventBatch.ts#L226-L265)
+🔗 [`processEventBatch.ts` — S3 업로드 로직](file:///Users/dhsshin/Documents/LLMOps/langfuse/packages/shared/src/server/ingestion/processEventBatch.ts)
 
 ```mermaid
 flowchart TD
@@ -254,9 +254,9 @@ flowchart TD
 예시: events/proj-abc/trace/trace-123/evt-uuid-456.json
 ```
 
-**S3 클라이언트 초기화** — `getS3StorageServiceClient()` (L40-54):
+**S3 클라이언트 초기화** — `getS3StorageServiceClient()`:
 
-🔗 [`processEventBatch.ts` L40](file:///Users/dhsshin/Documents/LLMOps/langfuse/packages/shared/src/server/ingestion/processEventBatch.ts#L40-L54)
+🔗 [`processEventBatch.ts` — S3 클라이언트 설정](file:///Users/dhsshin/Documents/LLMOps/langfuse/packages/shared/src/server/ingestion/processEventBatch.ts)
 
 | 환경변수 | 용도 | 사내 커스터마이징 |
 |---|---|---|
@@ -271,9 +271,9 @@ flowchart TD
 
 ## Phase 4: 샘플링 및 큐 삽입
 
-### 4.1 샘플링 — L300-319
+### 4.1 샘플링 — `isTraceIdInSample()`
 
-🔗 [`processEventBatch.ts` L300](file:///Users/dhsshin/Documents/LLMOps/langfuse/packages/shared/src/server/ingestion/processEventBatch.ts#L300-L319)
+🔗 [`processEventBatch.ts` — 샘플링 로직](file:///Users/dhsshin/Documents/LLMOps/langfuse/packages/shared/src/server/ingestion/processEventBatch.ts)
 
 ```mermaid
 flowchart TD
@@ -287,9 +287,9 @@ flowchart TD
     Metric_In --> Enqueue["큐에 삽입"]
 ```
 
-### 4.2 BullMQ 큐 삽입 — L321-348
+### 4.2 BullMQ 큐 삽입 — `IngestionQueue.add()`
 
-🔗 [`processEventBatch.ts` L321](file:///Users/dhsshin/Documents/LLMOps/langfuse/packages/shared/src/server/ingestion/processEventBatch.ts#L321-L348)
+🔗 [`processEventBatch.ts` — 큐 삽입 로직](file:///Users/dhsshin/Documents/LLMOps/langfuse/packages/shared/src/server/ingestion/processEventBatch.ts)
 
 ```typescript
 queue.add(QueueJobs.IngestionJob, {
@@ -322,9 +322,9 @@ flowchart TD
     C -- No --> NoSkip
 ```
 
-### 4.3 Delay 전략 — `getDelay()` (L62-82)
+### 4.3 Delay 전략 — `getDelay()`
 
-🔗 [`processEventBatch.ts` L62](file:///Users/dhsshin/Documents/LLMOps/langfuse/packages/shared/src/server/ingestion/processEventBatch.ts#L62-L82)
+🔗 [`processEventBatch.ts` — `getDelay()`](file:///Users/dhsshin/Documents/LLMOps/langfuse/packages/shared/src/server/ingestion/processEventBatch.ts)
 
 ```mermaid
 flowchart TD
@@ -346,9 +346,9 @@ flowchart TD
 
 ## Phase 5: 응답 조립
 
-### 5.1 aggregateBatchResult — L400-464
+### 5.1 `aggregateBatchResult()`
 
-🔗 [`processEventBatch.ts` L400](file:///Users/dhsshin/Documents/LLMOps/langfuse/packages/shared/src/server/ingestion/processEventBatch.ts#L400-L464)
+🔗 [`processEventBatch.ts` — `aggregateBatchResult()`](file:///Users/dhsshin/Documents/LLMOps/langfuse/packages/shared/src/server/ingestion/processEventBatch.ts)
 
 ```mermaid
 flowchart LR

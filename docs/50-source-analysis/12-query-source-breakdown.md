@@ -6,8 +6,8 @@
 > | 파일 | 줄 수 | 역할 |
 > |---|---|---|
 > | [`packages/shared/clickhouse/migrations/unclustered/0023_traces_aggregating_merge_trees.up.sql`](file:///Users/dhsshin/Documents/LLMOps/langfuse/packages/shared/clickhouse/migrations/unclustered/0023_traces_aggregating_merge_trees.up.sql) | — | ClickHouse AMT 스키마 정의 |
-> | [`web/src/server/api/routers/traces.ts`](file:///Users/dhsshin/Documents/LLMOps/langfuse/web/src/server/api/routers/traces.ts) | 665 | tRPC 라우터 (대시보드 쿼리 전체) |
-> | [`worker/src/services/IngestionService/index.ts`](file:///Users/dhsshin/Documents/LLMOps/langfuse/worker/src/services/IngestionService/index.ts) | 1736 | 이벤트 병합 로직 (데이터가 적재되는 방식 이해 필수) |
+> | [`web/src/server/api/routers/traces.ts`](file:///Users/dhsshin/Documents/LLMOps/langfuse/web/src/server/api/routers/traces.ts) | ~735 | tRPC 라우터 (대시보드 쿼리 전체) |
+> | [`worker/src/services/IngestionService/index.ts`](file:///Users/dhsshin/Documents/LLMOps/langfuse/worker/src/services/IngestionService/index.ts) | ~1935 | 이벤트 병합 로직 (데이터가 적재되는 방식 이해 필수) |
 
 ---
 
@@ -117,36 +117,25 @@ flowchart TD
 
 ## 2. tRPC 라우터 전체 프로시저 맵
 
-🔗 [`traces.ts` L97](file:///Users/dhsshin/Documents/LLMOps/langfuse/web/src/server/api/routers/traces.ts#L97)
+🔗 [`traces.ts`](file:///Users/dhsshin/Documents/LLMOps/langfuse/web/src/server/api/routers/traces.ts)
 
-```mermaid
-flowchart TD
-    TR["traceRouter<br/>(createTRPCRouter)"]
-
-    subgraph Queries["Query Procedures"]
-        HC["hasTracingConfigured<br/>(L98)"]
-        ALL["all (L125)<br/>메인 대시보드 목록"]
-        CA["countAll (L153)<br/>페이지네이션 총 건수"]
-        MET["metrics (L180)<br/>트레이스별 메트릭"]
-        FO["filterOptions (L262)<br/>필터 드롭다운 옵션"]
-        BI["byId (L332)<br/>단건 조회"]
-        BIOS["byIdWithObservationsAndScores (L352)<br/>상세 페이지"]
-        AG["getAgentGraphData (L594)<br/>에이전트 그래프 뷰"]
-    end
-
-    subgraph Mutations["Mutation Procedures"]
-        DM["deleteMany (L429)<br/>벌크 삭제"]
-        BK["bookmark (L475)<br/>북마크 토글"]
-        PB["publish (L535)<br/>공개/비공개 토글"]
-    end
-
-    TR --> Queries
-    TR --> Mutations
-```
+| 프로시저 | 시작 위치 | 타입 | 역할 |
+|---|---|---|---|
+| `hasTracingConfigured` | L110 | query | 프로젝트 트레이싱 구성 여부 확인 |
+| `all` | L137 | query | Trace 목록 조회 (with 필터/정렬/페이지네이션) |
+| `countAll` | L171 | query | 전체 Trace 수 카운트 |
+| `metrics` | L204 | query | 대시보드용 집계 메트릭 |
+| `filterOptions` | L286 | query | 필터 UI용 distinct 값 목록 |
+| `byId` | L359 | query | 단일 Trace 상세 |
+| `byIdWithObservationsAndScores` | L385 | query | Trace + Obs + Scores 통합 |
+| `deleteMany` | L462 | mutation | 복수 Trace 삭제 |
+| `bookmark` | L546 | mutation | Trace 북마크 토글 |
+| `publish` | L606 | mutation | Trace 공개 상태 변경 |
+| `getAgentGraphData` | L665 | query | Agent 그래프 데이터 |
 
 ### 2.1 `traceRouter.all` — 메인 대시보드 목록 쿼리
 
-🔗 [`traces.ts` L125-152](file:///Users/dhsshin/Documents/LLMOps/langfuse/web/src/server/api/routers/traces.ts#L125-L152)
+🔗 [`traces.ts` — `traceRouter.all` 프로시저](file:///Users/dhsshin/Documents/LLMOps/langfuse/web/src/server/api/routers/traces.ts#L137)
 
 ```mermaid
 sequenceDiagram
@@ -174,7 +163,7 @@ sequenceDiagram
 
 ### 2.2 `traceRouter.filterOptions` — 6개 병렬 ClickHouse 쿼리
 
-🔗 [`traces.ts` L262-331](file:///Users/dhsshin/Documents/LLMOps/langfuse/web/src/server/api/routers/traces.ts#L262-L331)
+🔗 [`traces.ts` — `traceRouter.metrics` 프로시저](file:///Users/dhsshin/Documents/LLMOps/langfuse/web/src/server/api/routers/traces.ts#L204)
 
 ```mermaid
 flowchart LR
@@ -208,7 +197,7 @@ flowchart LR
 
 ### 2.3 `traceRouter.byIdWithObservationsAndScores` — 상세 페이지
 
-🔗 [`traces.ts` L352-428](file:///Users/dhsshin/Documents/LLMOps/langfuse/web/src/server/api/routers/traces.ts#L352-L428)
+🔗 [`traces.ts` — `traceRouter.byIdWithObservationsAndScores` 프로시저](file:///Users/dhsshin/Documents/LLMOps/langfuse/web/src/server/api/routers/traces.ts#L385)
 
 ```mermaid
 sequenceDiagram
@@ -295,7 +284,7 @@ sequenceDiagram
 
 워커의 `mergeRecords()` 함수가 어떻게 동작하는지 이해하면, ClickHouse 쿼리 결과를 올바르게 해석할 수 있습니다.
 
-🔗 [`IngestionService/index.ts` L981](file:///Users/dhsshin/Documents/LLMOps/langfuse/worker/src/services/IngestionService/index.ts#L981-L1002)
+🔗 [`IngestionService/index.ts` — `mergeRecords()`](file:///Users/dhsshin/Documents/LLMOps/langfuse/worker/src/services/IngestionService/index.ts#L1114)
 
 ```typescript
 private mergeRecords<T extends InsertRecord>(

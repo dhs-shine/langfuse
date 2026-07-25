@@ -17,6 +17,10 @@ flowchart TD
         CW -->|addToQueue TracesNull| TN["traces_null<br/>(Null Engine)"]
         CW -->|addToQueue Observations| O["observations<br/>(ReplacingMergeTree)"]
         CW -->|addToQueue Scores| S["scores<br/>(ReplacingMergeTree)"]
+        CW -->|addToQueue ObsBatchStaging| BS["observations_batch_staging"]
+        CW -->|addToQueue EventsFull| EF["events_full<br/>(V4 전용 통합 이벤트)"]
+        CW -->|addToQueue DatasetRunItems| DRI["dataset_run_items"]
+        CW -->|addToQueue BlobStorageFileLog| BSF["blob_storage_file_log"]
     end
 
     subgraph MVPipeline["MV 자동 집계"]
