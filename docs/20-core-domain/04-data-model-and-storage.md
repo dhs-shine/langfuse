@@ -80,7 +80,7 @@ flowchart TD
     Filter -- "일반 모드 (Dual-Write)" --> DualWrite["프로세싱 및 병합"]
 
     DualWrite --> CH_V3["ClickHouse V3 Tables<br/>(traces, observations, scores)"]
-    DualWrite -->|v4WritesToEventsTable()| CH_V4["ClickHouse V4 Table<br/>(events_full)"]
+    DualWrite -- "v4WritesToEventsTable()" --> CH_V4["ClickHouse V4 Table<br/>(events_full)"]
 
     subgraph ReadPath["UI & tRPC 읽기 경로 (v4TransitionRouter)"]
         Query["Client UI Query"] --> Router["v4TransitionRouter"]
