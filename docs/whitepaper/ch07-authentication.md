@@ -135,11 +135,12 @@ stateDiagram-v2
 
     state ProcessInvitations {
         [*] --> FindByEmail : membershipInvitation.findMany(email)
-        FindByEmail --> HasInvites{초대 있음?}
-        HasInvites -- Yes --> Transaction : $transaction
+        state check_invites <<choice>>
+        FindByEmail --> check_invites
+        check_invites --> Transaction : 초대 있음
         Transaction --> CreateMembership : 멤버십 생성
         Transaction --> DeleteInvite : 초대장 삭제
-        HasInvites -- No --> Done
+        check_invites --> Done : 초대 없음
     }
 
     ProcessInvitations --> [*]
