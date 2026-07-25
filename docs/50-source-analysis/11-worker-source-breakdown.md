@@ -223,6 +223,84 @@ const immutableEntityKeys = {
 
 ---
 
+## Phase 5.1: V3 vs V4 이벤트 파이프라인 심층 비교 (Legacy vs Unified Events Engine)
+
+Langfuse 워커 시스템은 기존 **V3 (다중 테이블 개별 적재 구조)**에서 **V4 (통합 `events_full` 기반 이벤트 엔진)**로 전환 중이며, 환경변수 제어를 통해 하위 호환성과 점진적 마이그레이션을 지원합니다.
+
+### 1. V3 vs V4 스토리지 & 이중 기록 메커니즘 비교
+
+```mermaid
+flowchart TD
+    subgraph Ingest["Ingestion Batch / OTel Batch"]
+        E["Trace / Observation / Score Events"]
+    end
+
+    Ingest --> ModeCheck{"LANGFUSE_MIGRATION_V4_WRITE_MODE"}
+
+    subgraph V3Path["V3 Legacy Path (legacy / dual)"]
+        V3_1["IngestionService.mergeAndWrite()"]
+        V3_2["ClickHouse SELECT 기존 레코드 룩업<br/>(In-Memory Merge)"]
+        V3_3["ClickhouseWriter.addToQueue()"]
+        V3_3 --> T_Traces["traces 테이블"]
+        V3_3 --> T_Obs["observations 테이블"]
+        V3_3 --> T_Score["scores 테이블"]
+        V3_1 --> V3_2 --> V3_3
+    end
+
+    subgraph V4Staging["V4 Dual-Write Relay (dual 모드)"]
+        S1["ObservationsBatchStaging 테이블"]
+        S2["EventPropagationQueue (BullMQ Job)"]
+        S3["convertStagingToEventRecords()"]
+        S1 --> S2 --> S3 --> EF
+    end
+
+    subgraph V4Direct["V4 Direct Pipeline (events_only / OTel direct)"]
+        D1["otelIngestionQueue / IngestionService"]
+        D2["Direct Insert (SELECT 룩업 생략)"]
+        D1 --> D2 --> EF["events_full 테이블<br/>(ReplacingMergeTree)"]
+        EF --> MV["Materialized View<br/>(events_core 생성)"]
+    end
+
+    ModeCheck -- "legacy" --> V3Path
+    ModeCheck -- "dual" --> V3Path
+    ModeCheck -- "dual" --> V4Staging
+    ModeCheck -- "events_only" --> V4Direct
+```
+
+### 2. V4 핵심 환경변수 플래그 스펙
+
+🔗 [`worker/src/env.ts` — V4 마이그레이션 플래그](file:///Users/dhsshin/Documents/LLMOps/langfuse/worker/src/env.ts#L501-L528)
+
+| 환경변수 | 허용 옵션 (기본값) | 워커 동작 설명 |
+|---|---|---|
+| `LANGFUSE_MIGRATION_V4_WRITE_MODE` | `legacy` \| `dual` \| `events_only` (`events_only`) | - `legacy`: V3 개별 테이블만 작성<br/>- `dual`: V3 작성 + `ObservationsBatchStaging` 이중 기록 후 V4 전파<br/>- `events_only`: V3 개별 테이블 작성 생략, V4 전용 파이프라인 동작 |
+| `LANGFUSE_MIGRATION_V4_NATIVE_OTEL_BEHAVIOUR` | `dual_write` \| `direct` (`direct`) | - `dual_write`: OTel 스팬을 legacy observation으로 변환 후 이중 기록<br/>- `direct`: legacy 변환 오버헤드 없이 `events_full`에 직접 Insert |
+| `LANGFUSE_MIGRATION_V4_ALLOW_PREVIEW_OPT_IN` | `"true"` \| `"false"` (`"true"`) | Web App 및 API 조회가 V4 `events_core` / `events_full` 테이블을 읽을 수 있도록 허용 |
+| `LANGFUSE_EVENT_PROPAGATION_STUCK_THRESHOLD_MINUTES` | `number` (`15`) | Dual Write Job의 하트비트가 지연될 경우 `/api/health` 503 반환 래치 타임아웃 |
+
+#### V4 설정 검증 규칙 (`validateV4Flags`)
+환경변수 조합 오류로 인한 데이터 유실을 방지하기 위해 Boot 시점에 엄격하게 검증합니다:
+1. `mode === "legacy" && otel === "direct"` → **오류 발생** (`direct` OTel은 legacy 테이블에 쓰지 않으므로 데이터 유실).
+2. `mode === "events_only" && otel === "dual_write"` → **오류 발생** (`events_only`인데 legacy 이중 기록을 시도하는 모순).
+3. `mode === "events_only" && !v4AllowPreviewOptIn` → **오류 발생** (읽기는 legacy를 바라보는데 쓰기는 V4만 하는 현상 방지).
+
+---
+
+### 3. V3 vs V4 상세 특성 비교표
+
+| 비교 항목 | V3 Legacy Architecture | V4 Unified Events Architecture |
+|---|---|---|
+| **저장 대상 테이블** | `traces`, `observations`, `scores` (분산 테이블) | `events_full` (ReplacingMergeTree) + `events_core` (MV) |
+| **이벤트 병합 (Deduplication)** | Node.js 워커 메모리 상에서 ClickHouse `SELECT` 룩업 후 병합 (`mergeTraceRecords`) | ClickHouse DB 엔진 수준 병합 (`ReplacingMergeTree` + `argMax(event_ts, updated_at)`) |
+| **수집 지연시간 (Latency)** | READ-before-WRITE 패턴으로 인한 ClickHouse 쿼리 딜레이 발생 | Direct WRITE 패턴으로 SELECT 룩업 없이 메모리 버퍼 후 즉시 Flush |
+| **OTel 수집 파이프라인** | OTel Trace → Observation schema 변환 필요 | OTel native 스팬 데이터를 `events_full` 표준 필드로 직접 맵핑 |
+| **이중 기록 (Dual Write)** | 해당 없음 | `ObservationsBatchStaging` 큐 → `eventPropagationJob` 병렬 비동기 전파 |
+| **백그라운드 마이그레이션** | 없음 | - `backfillEventsFullFromObservations`<br/>- `createRootSpansFromTraces`<br/>- `backfillEventsFullFromDatasetRunItems`<br/>- `dropPidTidSortingTables` |
+| **장애 격리 (Fault Tolerance)** | 워커 DB 룩업 실패 시 Ingestion Job Retry | Direct Write 및 Stage Table 비동기 Propagation으로 큐 부하 분산 |
+
+---
+
+
 ## Phase 6: ClickhouseWriter — 메모리 버퍼 & Flush
 
 🔗 [`ClickhouseWriter/index.ts` — `ClickhouseWriter` 클래스](file:///Users/dhsshin/Documents/LLMOps/langfuse/worker/src/services/ClickhouseWriter/index.ts#L34)
@@ -319,14 +397,18 @@ ClickHouse의 `Decimal64(12)` 타입은 범위가 제한적(-10^6 ~ 10^6)입니�
 
 | 환경변수 | 기본값 | 설명 |
 |---|---|---|
-| `LANGFUSE_ENABLE_BLOB_STORAGE_FILE_LOG` | `"false"` | S3 파일 메타데이터를 ClickHouse에 기록할지 여부 |
+| `LANGFUSE_ENABLE_BLOB_STORAGE_FILE_LOG` | `"false"` | S3 파일 메타데이터를 ClickHouse `blob_storage_file_log`에 기록할지 여부 |
 | `LANGFUSE_ENABLE_REDIS_SEEN_EVENT_CACHE` | `"false"` | Redis 중복 방지 캐시 사용 여부 |
 | `LANGFUSE_SECONDARY_INGESTION_QUEUE_ENABLED_PROJECT_IDS` | — | 강제 Secondary Queue 프로젝트 ID 목록 (쉼표 구분) |
 | `LANGFUSE_S3_CONCURRENT_READS` | — | S3 병렬 다운로드 수 (사내 네트워크에 맞게 튜닝) |
 | `LANGFUSE_INGESTION_CLICKHOUSE_WRITE_BATCH_SIZE` | — | flush 시 한 번에 Insert할 최대 레코드 수 |
 | `LANGFUSE_INGESTION_CLICKHOUSE_WRITE_INTERVAL_MS` | — | setInterval flush 주기 (ms) |
 | `LANGFUSE_INGESTION_CLICKHOUSE_MAX_ATTEMPTS` | — | flush 최대 재시도 횟수 (초과 시 레코드 폐기) |
-| `LANGFUSE_EXPERIMENT_INSERT_INTO_EVENTS_TABLE` | `"false"` | events_full 테이블에 이중 기록 여부 |
+| `LANGFUSE_MIGRATION_V4_WRITE_MODE` | `"events_only"` | V4 쓰기 모드 (`legacy` \| `dual` \| `events_only`) |
+| `LANGFUSE_MIGRATION_V4_NATIVE_OTEL_BEHAVIOUR` | `"direct"` | OTel 처리 방식 (`dual_write` \| `direct`) |
+| `LANGFUSE_MIGRATION_V4_ALLOW_PREVIEW_OPT_IN` | `"true"` | Web UI / API 조회의 V4 `events_core` / `events_full` 테이블 읽기 허용 여부 |
+| `LANGFUSE_EVENT_PROPAGATION_STUCK_THRESHOLD_MINUTES` | `15` | Dual Write event propagation 장애 감지 하트비트 래치 타임아웃 (분) |
+| `LANGFUSE_BACKGROUND_MIGRATION_V4_ENABLE_HISTORIC_BACKFILL` | `"true"` | 과거 V3 데이터의 V4 `events_full` 백그라운드 마이그레이션 활성화 |
 
 ---
 
