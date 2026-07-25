@@ -138,11 +138,18 @@ sequenceDiagram
 ```mermaid
 timeline
     title UTC 시간대별 Delay 전략
-    23:00 : "API 소스 = min(5s, env)<br/>OTel 소스 = 0ms"
-    23:45 : "🔴 모든 소스 = LANGFUSE_INGESTION_QUEUE_DELAY_MS"
-    00:00 : "🔴 날짜 변경선 (Day Boundary)"
-    00:15 : "🔴 모든 소스 = LANGFUSE_INGESTION_QUEUE_DELAY_MS"
-    00:30 : "API 소스 = min(5s, env)<br/>OTel 소스 = 0ms"
+    section 23시 00분
+        API 소스 = min 5s, env
+        OTel 소스 = 0ms
+    section 23시 45분
+        🔴 모든 소스 = LANGFUSE_INGESTION_QUEUE_DELAY_MS
+    section 00시 00분
+        🔴 날짜 변경선 (Day Boundary)
+    section 00시 15분
+        🔴 모든 소스 = LANGFUSE_INGESTION_QUEUE_DELAY_MS
+    section 00시 30분
+        API 소스 = min 5s, env
+        OTel 소스 = 0ms
 ```
 
 > **왜 자정인가?** ClickHouse 파티셔닝이 날짜 기준이다. 23:59에 도착한 Create와 00:01에 도착한 Update가 다른 파티션에 들어가면, 병합 시 Create를 찾지 못할 수 있다.
