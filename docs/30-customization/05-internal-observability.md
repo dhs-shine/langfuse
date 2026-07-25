@@ -62,3 +62,12 @@ sequenceDiagram
   - 로그성 데이터인 `traces`와 `observations` 테이블에 대해 사내 정책(예: 3개월, 6개월)에 맞게 ClickHouse TTL 설정을 적용.
 - **S3 Cold Storage 백업**: 
   - 3개월이 지난 중요 감사(Audit) 데이터는 Worker의 Batch Export 기능을 확장하여 사내 S3 호환 Object Storage로 자동 압축 백업(Parquet/JSONL 등)하도록 구성.
+
+---
+
+| | |
+|---|---|
+| ⬅️ 이전 | [04 Data Model and Storage](../20-core-domain/04-data-model-and-storage.md) |
+| ➡️ 다음 | [06 Ingestion Pipeline](../40-anatomy-deep-dive/06-ingestion-pipeline.md) |
+| ⬇️ 소스 딥다이브 | [13 Customization Source Breakdown](../50-source-analysis/13-customization-source-breakdown.md) |
+| 🏠 색인 | [README](../README.md) |

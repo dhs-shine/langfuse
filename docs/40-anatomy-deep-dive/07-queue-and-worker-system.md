@@ -185,7 +185,7 @@ flowchart LR
 
 ## 관련 문서
 
-| 방향 | 문서 |
+| | |
 |---|---|
 | ⬇️ 소스 딥다이브 | [11 Worker Source Breakdown](../50-source-analysis/11-worker-source-breakdown.md) |
 | ⬅️ 이전 | [06 Ingestion Pipeline](./06-ingestion-pipeline.md) |

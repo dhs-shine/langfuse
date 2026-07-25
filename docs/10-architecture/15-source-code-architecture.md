@@ -68,3 +68,11 @@ flowchart TD
 - **DB 스키마 생성**: `pnpm run db:generate` (Prisma 스키마 변경 시 필수 실행)
 - **API 클라이언트 생성**: Fern 정의 변경 시 자동화 파이프라인을 통해 생성되며 `generated/` 폴더는 직접 수정하지 않습니다.
 - **테스트 실행**: `pnpm --filter web run test <file>` (web 서버 테스트), `pnpm --filter worker run test <file>` (워커 테스트), `pnpm --filter @langfuse/shared run test <file>` (shared 테스트). Vitest 기반으로 파일명 필터링을 지원합니다.
+
+---
+
+| | |
+|---|---|
+| ⬅️ 이전 | [03 Architecture](./03-architecture.md) |
+| ➡️ 다음 | [04 Data Model and Storage](../20-core-domain/04-data-model-and-storage.md) |
+| 🏠 색인 | [README](../README.md) |

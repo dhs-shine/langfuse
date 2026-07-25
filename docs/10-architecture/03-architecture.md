@@ -149,3 +149,11 @@ SDK 기반 Ingestion 외에, 표준 **OTel 프로토콜** 경로(`/api/public/ot
 ### Ingestion Attribution
 
 수집 시 API 키, SDK 이름, SDK 버전 등의 **귀속 정보(Attribution)**가 큐 페이로드에 함께 전달되어, 어떤 SDK/클라이언트에서 어떤 이벤트를 보냈는지 추적할 수 있습니다.
+
+---
+
+| | |
+|---|---|
+| ⬅️ 이전 | [01 Requirements and Scope](../00-foundation/01-requirements-and-scope.md) |
+| ➡️ 다음 | [15 Source Code Architecture](./15-source-code-architecture.md) |
+| 🏠 색인 | [README](../README.md) |

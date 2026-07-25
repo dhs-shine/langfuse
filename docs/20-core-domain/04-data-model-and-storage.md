@@ -74,3 +74,11 @@ erDiagram
 1. **불변성(Immutability) 우선**: ClickHouse의 분석 데이터는 가급적 UPDATE가 발생하지 않는 Append-only 패턴을 지향합니다. 읽기 시점의 중복 제거(Deduplication)를 강제하는 UPDATE 작업은 대규모 환경에서 보이지 않는 쿼리 비용을 유발합니다.
 2. **Denormalization(비정규화)**: 쿼리 성능을 높이기 위해 ClickHouse 내부에서는 잦은 Join을 피합니다. 자주 필터링 조건으로 사용되는 속성은 Observation에 중복해서 저장합니다.
 3. **읽기와 쓰기 최적화 분리**: 데이터 쓰기는 대규모 Ingestion Queue(BullMQ)를 통한 배치 Insert로 처리하고, 읽기는 Materialized View를 활용해 응답 속도를 극대화합니다.
+
+---
+
+| | |
+|---|---|
+| ⬅️ 이전 | [15 Source Code Architecture](../10-architecture/15-source-code-architecture.md) |
+| ➡️ 다음 | [05 Internal Observability Customization](../30-customization/05-internal-observability.md) |
+| 🏠 색인 | [README](../README.md) |

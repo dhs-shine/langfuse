@@ -126,7 +126,7 @@ ClickHouse는 컬럼 스캔에 특화되어 있지만, 대시보드에서 특정
 
 ## 관련 문서
 
-| 방향 | 문서 |
+| | |
 |---|---|
 | ⬇️ 소스 딥다이브 | [12 Query Source Breakdown](../50-source-analysis/12-query-source-breakdown.md) |
 | ⬅️ 이전 | [07 Queue and Worker System](./07-queue-and-worker-system.md) |

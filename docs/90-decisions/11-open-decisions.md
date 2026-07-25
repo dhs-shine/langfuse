@@ -36,3 +36,10 @@
 
 > *현재 완료된 결정 사항 없음.*
 > *결정이 완료될 경우 여기에 날짜, 결정 내용, 그리고 이유를 기록합니다.*
+
+---
+
+| | |
+|---|---|
+| ⬅️ 이전 | [13 Customization Source Breakdown](../50-source-analysis/13-customization-source-breakdown.md) |
+| 🏠 색인 | [README](../README.md) |

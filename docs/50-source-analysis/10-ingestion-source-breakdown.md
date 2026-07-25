@@ -384,6 +384,11 @@ flowchart LR
 
 ---
 
-## 다음 문서
+---
 
-이 단계에서 Redis 큐에 적재된 Job이 워커에서 어떻게 소비·병합·적재되는지는 👉 [11 Worker Source Breakdown](./11-worker-source-breakdown.md)에서 이어집니다.
+| | |
+|---|---|
+| ⬅️ 이전 | [09 tRPC and Next.js](../40-anatomy-deep-dive/09-trpc-and-nextjs.md) |
+| ➡️ 다음 | [11 Worker Source Breakdown](./11-worker-source-breakdown.md) |
+| ⬆️ 개요 | [06 Ingestion Pipeline](../40-anatomy-deep-dive/06-ingestion-pipeline.md) |
+| 🏠 색인 | [README](../README.md) |

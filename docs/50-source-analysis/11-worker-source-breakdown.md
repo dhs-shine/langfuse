@@ -350,6 +350,11 @@ ClickHouse의 `Decimal64(12)` 타입은 범위가 제한적(-10^6 ~ 10^6)입니�
 
 ---
 
-## 다음 문서
+---
 
-ClickHouse에 적재된 데이터가 프론트엔드 쿼리에서 어떻게 읽히는지는 👉 [12 Query Source Breakdown](./12-query-source-breakdown.md)에서 이어집니다.
+| | |
+|---|---|
+| ⬅️ 이전 | [10 Ingestion Source Breakdown](./10-ingestion-source-breakdown.md) |
+| ➡️ 다음 | [12 Query Source Breakdown](./12-query-source-breakdown.md) |
+| ⬆️ 개요 | [07 Queue and Worker System](../40-anatomy-deep-dive/07-queue-and-worker-system.md) |
+| 🏠 색인 | [README](../README.md) |

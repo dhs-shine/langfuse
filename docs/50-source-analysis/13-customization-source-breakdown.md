@@ -267,7 +267,7 @@ flowchart LR
 
 ## 관련 문서 네비게이션
 
-| 방향 | 문서 |
+| | |
 |---|---|
 | ⬆️ 상위 설계 | [05 Internal Observability Customization](../30-customization/05-internal-observability.md) |
 | ⬅️ 이전 | [12 Query Source Breakdown](./12-query-source-breakdown.md) |

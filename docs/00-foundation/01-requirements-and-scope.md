@@ -32,3 +32,10 @@ Langfuse를 도입하고 운영하기 위한 주요 커스터마이징 요구사
 1. 사내 SSO 로그인을 통해 Organization 및 Project가 자동으로 프로비저닝되는가.
 2. 초당 대규모 LLM Trace/Observation Ingestion 트래픽이 Worker 큐를 거쳐 ClickHouse에 유실 없이 저장되는가.
 3. 사내 프라이빗 모델 사용 시 토큰당 비용이 대시보드에 정상적으로 합산되어 출력되는가.
+
+---
+
+| | |
+|---|---|
+| ➡️ 다음 | [03 Architecture](../10-architecture/03-architecture.md) |
+| 🏠 색인 | [README](../README.md) |

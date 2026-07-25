@@ -329,7 +329,7 @@ flowchart LR
 
 ## 관련 문서 네비게이션
 
-| 방향 | 문서 |
+| | |
 |---|---|
 | ⬆️ 구조 해부 | [08 ClickHouse Schema & MVs](../40-anatomy-deep-dive/08-clickhouse-schema-and-mvs.md) |
 | ⬆️ tRPC 해부 | [09 tRPC and Next.js](../40-anatomy-deep-dive/09-trpc-and-nextjs.md) |

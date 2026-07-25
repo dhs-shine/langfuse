@@ -121,8 +121,9 @@ flowchart TD
 
 ## 관련 문서
 
-| 방향 | 문서 |
+| | |
 |---|---|
-| ⬇️ 소스 딥다이브 | [10 Ingestion Source Breakdown](../50-source-analysis/10-ingestion-source-breakdown.md) |
+| ⬅️ 이전 | [05 Internal Observability Customization](../30-customization/05-internal-observability.md) |
 | ➡️ 다음 | [07 Queue and Worker System](./07-queue-and-worker-system.md) |
+| ⬇️ 소스 딥다이브 | [10 Ingestion Source Breakdown](../50-source-analysis/10-ingestion-source-breakdown.md) |
 | 🏠 색인 | [README](../README.md) |
