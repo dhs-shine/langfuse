@@ -38,7 +38,7 @@ flowchart TD
     SlowOr -- No --> S3Download
     SlowOr -- Yes --> Redirect["SecondaryIngestionQueue<br/>.add(job.data)<br/>→ return 🛑"]
 
-    S3Download --> PathCheck{shouldSkipS3List?<br/>(L158-160)}
+    S3Download --> PathCheck{"shouldSkipS3List?<br/>(L158-160)"}
     PathCheck -- Yes --> DirectDL["Direct Download<br/>s3Client.download(filePath)<br/>(L165-179)"]
     PathCheck -- No --> ListDL["s3Client.listFiles(prefix)<br/>→ chunk(files, S3_CONCURRENT_READS)<br/>→ 배치별 Promise.all(download)<br/>(L180-206)"]
 
@@ -47,7 +47,7 @@ flowchart TD
 
     SetSeen["Redis에 처리 완료 캐시 저장<br/>redis.set(key, '1', 'EX', 300)<br/>(L241-261)"]
 
-    SetSeen --> EmptyCheck{events.length === 0?<br/>(L231)}
+    SetSeen --> EmptyCheck{"events.length === 0?<br/>(L231)"}
     EmptyCheck -- Yes --> WarnReturn["logger.warn → return 🛑"]
     EmptyCheck -- No --> Forward["forwardToEventsTable 결정<br/>(L269-271)"]
 
