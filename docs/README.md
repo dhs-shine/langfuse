@@ -32,6 +32,7 @@ flowchart TD
 
     subgraph Custom["30 Customization"]
         CI["05 Internal Observability"]
+        OPS["06 Operations & Troubleshooting"]
     end
 
     subgraph Anatomy["40 Anatomy Deep Dive"]
@@ -39,6 +40,8 @@ flowchart TD
         QW["07 Queue & Worker System"]
         CH["08 ClickHouse Schema & MVs"]
         TR["09 tRPC & Next.js"]
+        MCP["14 MCP & AI Agent"]
+        BA["15 Batch Actions & Async"]
     end
 
     subgraph Source["50 Source Analysis"]
@@ -61,15 +64,14 @@ flowchart TD
     IP --> QW
     DM --> CH
     SA --> TR
-
-    IP --> I_SRC
-    QW --> W_SRC
-    CH --> Q_SRC
-    TR --> Q_SRC
+    TR --> MCP
+    MCP --> BA
 
     SA --> CI
+    CI --> OPS
     DM --> CI
     CI --> C_SRC
+    BA --> OPS
     C_SRC --> OD
 ```
 
@@ -77,11 +79,11 @@ flowchart TD
 
 | 독자 | 읽는 순서 | 목적 |
 | --- | --- | --- |
-| 시스템 아키텍트 | 01 → 03 → 15 → 04 → 06 → 07 | 요구사항, 전체 아키텍처, 소스 구조, 데이터 모델, 수집/처리 파이프라인 전체 파악 |
-| 백엔드 엔지니어 | 03 → 15 → 06 → 07 → 10 → 11 → 12 | 모노레포 구조, Ingestion/Worker 소스코드 구현체 라인 바이 라인 딥다이브 |
-| 프론트엔드/커스텀 | 05 → 09 → 13 | 커스텀 인증(SSO) 연동, tRPC 라우팅 구조, 모델 가격 정책 수정 위치 파악 |
-| 데이터 엔지니어 | 04 → 08 → 12 | 와이드 이벤트 모델, ClickHouse AMT/MV 롤업 최적화, SQL 바인딩 분석 |
-| 인프라/보안 담당자 | 03 → 05 → 11 → 13 | 인프라 토폴로지, SSO 연동 주의사항, 오픈 결정 사항 점검 |
+| 시스템 아키텍트 | 01 → 03 → 15 → 04 → 06 → 07 → 14 | 요구사항, 전체 아키텍처, 소스 구조, 데이터 모델, 수집/처리 및 MCP 파이프라인 전체 파악 |
+| 백엔드 엔지니어 | 03 → 15 → 06 → 07 → 15 → 10 → 11 → 12 | 모노레포 구조, Ingestion/Worker/Batch Action 소스코드 구현체 라인 바이 라인 딥다이브 |
+| 프론트엔드/커스텀 | 05 → 09 → 14 → 13 | 커스텀 인증(SSO) 연동, tRPC 라우팅, MCP 에이전트 툴, 모델 가격 정책 수정 위치 파악 |
+| 데이터 엔지니어 | 04 → 08 → 12 | V4 Wide Event 모델, ClickHouse AMT/MV 롤업 최적화, SQL 바인딩 분석 |
+| 인프라/SRE/보안 | 03 → 05 → 06(Ops) → 15(Batch) → 11(Decisions) | 인프라 토폴로지, Noisy Neighbor Secondary Queue 격리, 트러블슈팅, SSO 연동 점검 |
 
 ## 전체 문서 목록
 
@@ -102,22 +104,25 @@ flowchart TD
 
 | 문서 | 핵심 내용 |
 | --- | --- |
-| [04 Data Model and Storage](20-core-domain/04-data-model-and-storage.md) | PostgreSQL(릴레이셔널) + ClickHouse(분석) 이중 저장소 역할 분담 |
+| [04 Data Model and Storage](20-core-domain/04-data-model-and-storage.md) | PostgreSQL(릴레이셔널) + ClickHouse(분석) 이중 저장소 및 V4 Wide Event (`events_full`) 마이그레이션 |
 
-### 30 Customization
+### 30 Customization & Operations
 
 | 문서 | 핵심 내용 |
 | --- | --- |
 | [05 Internal Observability Customization](30-customization/05-internal-observability.md) | 사내 SSO 통합 설계, 커스텀 LLM 가격 산정 전략 |
+| [06 Operations and Troubleshooting Guide](30-customization/06-operations-and-troubleshooting.md) | SRE/운영자 트러블슈팅 매뉴얼, 사내 커스텀 모델 가격 주입 및 SSO 연동 실전 가이드 |
 
 ### 40 Anatomy Deep Dive — 소스 아키텍처 심층 해부
 
 | 문서 | 핵심 내용 | 주요 다이어그램 |
 | --- | --- | --- |
-| [06 Ingestion Pipeline](40-anatomy-deep-dive/06-ingestion-pipeline.md) | API → S3 → BullMQ → Worker → ClickHouse 3단계 비동기 파이프라인 | 시퀀스 다이어그램 |
-| [07 Queue and Worker System](40-anatomy-deep-dive/07-queue-and-worker-system.md) | BullMQ 큐 토폴로지, WorkerManager, Retry Baggage, DLQ | 토폴로지 차트 + 클래스 다이어그램 |
-| [08 ClickHouse Schema & MVs](40-anatomy-deep-dive/08-clickhouse-schema-and-mvs.md) | Null → MV → AMT 트리거 패턴, sumMap/argMax 집계 | 테이블 계층 플로우차트 |
+| [06 Ingestion Pipeline](40-anatomy-deep-dive/06-ingestion-pipeline.md) | API → S3 → BullMQ → Worker → ClickHouse 3단계 파이프라인 & OTel 수집 | 시퀀스 다이어그램 |
+| [07 Queue and Worker System](40-anatomy-deep-dive/07-queue-and-worker-system.md) | BullMQ 큐 토폴로지, WorkerManager, Secondary Queue 노이즈 방어 | 토폴로지 차트 + 격리 플로우차트 |
+| [08 ClickHouse Schema & MVs](40-anatomy-deep-dive/08-clickhouse-schema-and-mvs.md) | Null → MV → AMT 트리거 패턴, 단계별 물리 롤업 | 테이블 계층 + 시퀀스 다이어그램 |
 | [09 tRPC and Next.js](40-anatomy-deep-dive/09-trpc-and-nextjs.md) | 미들웨어 체인, 병렬 쿼리 패턴, Parameter Binding 보안 | 미들웨어 체인 + 시퀀스 다이어그램 |
+| [14 MCP and AI Agent Architecture](40-anatomy-deep-dive/14-mcp-and-ai-agent-architecture.md) | MCP 서버 API (`/api/public/mcp`), 15개 툴 레지스트리, 인앱 에이전트 HITL | MCP 아키텍처 + 시퀀스 다이어그램 |
+| [15 Batch Actions and Async Framework](40-anatomy-deep-dive/15-batch-actions-and-async-framework.md) | `BatchActionQueue` 9가지 대대량 비동기 액션, 동시성 제어 및 백프레셔 | 배치 액션 플로우차트 |
 
 ### 50 Source Analysis — 소스코드 라인 바이 라인 분석
 

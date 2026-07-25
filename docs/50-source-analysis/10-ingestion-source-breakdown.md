@@ -388,7 +388,7 @@ flowchart LR
 
 | | |
 |---|---|
-| ⬅️ 이전 | [09 tRPC and Next.js](../40-anatomy-deep-dive/09-trpc-and-nextjs.md) |
+| ⬅️ 이전 | [06 Operations and Troubleshooting Guide](../30-customization/06-operations-and-troubleshooting.md) |
 | ➡️ 다음 | [11 Worker Source Breakdown](./11-worker-source-breakdown.md) |
 | ⬆️ 개요 | [06 Ingestion Pipeline](../40-anatomy-deep-dive/06-ingestion-pipeline.md) |
 | 🏠 색인 | [README](../README.md) |

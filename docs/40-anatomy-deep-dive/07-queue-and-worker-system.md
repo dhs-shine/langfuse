@@ -174,12 +174,39 @@ flowchart LR
     Requeue --> Job
 ```
 
-### Dead Letter Queue (DLQ)
+### Dead Letter Queue (DLQ) 처리
 
-`DeadLetterRetryQueue`는 반복해서 실패한 Job들이 폐기되기 전에 모이는 큐입니다. 시스템 관리자는:
-1. DLQ에 모인 실패 작업의 에러 로그 분석
-2. 버그 수정 후 DLQ의 작업들을 원래 큐로 복원
-3. 데이터 유실 없이 복구 완료
+🔗 [`DeadLetterRetryQueue`](file:///Users/dhsshin/Documents/LLMOps/langfuse/packages/shared/src/server/queues.ts)
+
+모든 워커는 `maxAttempts`를 초과하여 최종 실패한 Job을 삭제하지 않고 `DeadLetterRetryQueue`로 전달합니다. 운영자는 대시보드나 CLI를 통해 원인을 확인하고, 버그 수정 후 일괄 재처리(Re-queue)할 수 있습니다.
+
+---
+
+## 5. 격리 및 백프레셔 메커니즘 (Noisy-Neighbor Defense & Backpressure)
+
+특정 부서/프로젝트의 갑작스러운 트래픽 폭주나 외부 스토리지(S3) 장애 시 전체 파이프라인 마비를 방지하기 위한 3단계 방어 체계를 가집니다.
+
+```mermaid
+flowchart TD
+    JobIncoming["Ingestion Job 도착"] --> PrimaryWorker["Primary Ingestion Worker"]
+    
+    PrimaryWorker --> S3Check{"S3 503 Slowdown<br/>또는 특정 프로젝트 폭주?"}
+    
+    S3Check -- "정상" --> CHWrite["ClickhouseWriter에 배치 전달"]
+    S3Check -- "Slowdown / 폭주" --> DelayRelay["Secondary Queue 릴레이<br/>(IngestionSecondaryQueue)"]
+    
+    DelayRelay --> BackoffDelay["getDelay() 지수 백오프 부여<br/>(1s -> 2s -> 4s -> ...)"]
+    BackoffDelay --> SecondaryWorker["Secondary Worker에서 비동기 소비"]
+
+    SecondaryWorker --> RetryLimit{"RetryBaggage<br/>최대 재시도 초과?"}
+    RetryLimit -- "초과" --> DLQ["DeadLetterRetryQueue 수집"]
+    RetryLimit -- "미초과" --> CHWrite
+```
+
+### 3단계 방어 원리
+1. **Secondary Queue 격리**: 고처리량 프로젝트나 S3 SlowDown 응답을 받은 이벤트는 `IngestionSecondaryQueue` 또는 `OtelIngestionSecondaryQueue`로 즉시 이관하여, 기본 `IngestionQueue`의 타 프로젝트 이벤트 처리가 차단되지 않도록 보호.
+2. **지수 백오프 지연 (`getDelay()`)**: 재시도 횟수(retryCount)에 따라 큐 재삽입 시 `delay` 값을 동적으로 부여하여 S3 / DB의 백프레셔(Backpressure)를 완화.
+3. **DeadLetterRetryQueue 격리**: 최종 실패 항목을 별도 DLQ로 이격하여 불필요한 큐 재처리가 전체 워커 CPU를 낭비하지 않도록 통제.
 
 ---
 

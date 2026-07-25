@@ -191,6 +191,6 @@ await clickhouseClient().query({
 | | |
 |---|---|
 | ⬅️ 이전 | [08 ClickHouse Schema & MVs](./08-clickhouse-schema-and-mvs.md) |
-| ➡️ 다음 | [10 Ingestion Source Breakdown](../50-source-analysis/10-ingestion-source-breakdown.md) |
+| ➡️ 다음 | [14 MCP and AI Agent Architecture](./14-mcp-and-ai-agent-architecture.md) |
 | ⬇️ 소스 딥다이브 | [12 Query Source Breakdown](../50-source-analysis/12-query-source-breakdown.md) |
 | 🏠 색인 | [README](../README.md) |

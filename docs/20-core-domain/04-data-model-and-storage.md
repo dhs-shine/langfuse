@@ -59,8 +59,7 @@ erDiagram
         String model
         Int input_tokens
         Int output_tokens
-        Float latency
-        JSON metadata
+        Decimal calculated_total_cost
     }
     TRACES {
         UUID id
@@ -69,7 +68,34 @@ erDiagram
     }
 ```
 
-## 3. Storage 설계 원칙
+## 3. V4 통합 이벤트 모델 (`events_full`) 및 마이그레이션 아키텍처
+
+Langfuse 최신 버전은 V3의 파편화된 테이블 구조(`traces`, `observations`, `scores`)에서 **V4 통합 이벤트 모델 (`events_full`)**로 전환하는 마이그레이션 단계를 거치고 있습니다.
+
+```mermaid
+flowchart TD
+    Ingest["Ingestion API / SDK Batch"] --> Filter{"filterBatchForEventsOnly()<br/>(events_only 모드인가?)"}
+    
+    Filter -- "events_only=true" --> V4Only["Trace/Observation 거부<br/>(Score & SDK Log만 수집)"]
+    Filter -- "일반 모드 (Dual-Write)" --> DualWrite["프로세싱 및 병합"]
+
+    DualWrite --> CH_V3["ClickHouse V3 Tables<br/>(traces, observations, scores)"]
+    DualWrite -->|v4WritesToEventsTable()| CH_V4["ClickHouse V4 Table<br/>(events_full)"]
+
+    subgraph ReadPath["UI & tRPC 읽기 경로 (v4TransitionRouter)"]
+        Query["Client UI Query"] --> Router["v4TransitionRouter"]
+        Router --> SdkCheck{"classifyIngestionSdkVersion()<br/>SDK 버전에 따른 쿼리 분기"}
+        SdkCheck -- "V4 호환 SDK" --> CH_V4
+        SdkCheck -- "레거시 SDK" --> CH_V3
+    end
+```
+
+### V4 전환의 3대 핵심 메커니즘
+1. **`events_full` 와이드 통합 테이블**: Trace, Observation, Score의 모든 컨텍스트를 단일 시계열 이벤트 레코드로 통합하여 ClickHouse의 Join 오버헤드를 완전 제거.
+2. **`filterBatchForEventsOnly()` 사전 필터링**: V4 클러스터 전용 마이그레이션 시 수집 진입점에서 Trace/Observation 쓰기를 차단하여 수집 노드의 스토리지 및 CPU 사용량을 절감.
+3. **`v4TransitionRouter`를 통한 하위 호환성 유지**: SDK 버전을 자동 분류(`classifyIngestionSdkVersion`)하여 구형 SDK 사용 부서는 V3 구조로, 신형 SDK 적용 부서는 V4 구조로 투명하게 쿼리를 라우팅.
+
+## 4. 데이터 보존 및 설계 원칙
 
 1. **불변성(Immutability) 우선**: ClickHouse의 분석 데이터는 가급적 UPDATE가 발생하지 않는 Append-only 패턴을 지향합니다. 읽기 시점의 중복 제거(Deduplication)를 강제하는 UPDATE 작업은 대규모 환경에서 보이지 않는 쿼리 비용을 유발합니다.
 2. **Denormalization(비정규화)**: 쿼리 성능을 높이기 위해 ClickHouse 내부에서는 잦은 Join을 피합니다. 자주 필터링 조건으로 사용되는 속성은 Observation에 중복해서 저장합니다.

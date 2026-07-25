@@ -117,6 +117,28 @@ flowchart TD
 
 > **V4 전환 지원**: 워커는 `v4WritesToEventsTable()` 함수를 통해 `events_full` 테이블에 이중 기록 여부를 동적으로 결정합니다.
 
+## 4. OpenTelemetry (OTel) 네이티브 수집 파이프라인
+
+Langfuse 네이티브 SDK 외에, 사내 OTel Collector 또는 OpenTelemetry SDK에서 직접 전송되는 OTLP 프로토콜 수집을 지원합니다.
+
+```mermaid
+flowchart TD
+    OTelSDK["OTel SDK / Collector"] -->|OTLP Protobuf or JSON| OTelAPI["POST /api/public/otel/v1/traces"]
+    OTelAPI --> AuthCheck["Basic Auth (API Key) & Rate Limit"]
+    AuthCheck --> ParseOTLP["parseOtlpTraces()<br/>(Resource Spans 추출)"]
+    ParseOTLP --> S3Store["S3 Payload Offloading<br/>(대용량 OTLP JSON 저장)"]
+    S3Store --> Enqueue["OtelIngestionQueue.add()"]
+    
+    Enqueue --> Worker["Worker: OtelIngestionQueue Processor"]
+    Worker --> Mapper["convertOtlpSpanToLangfuse()<br/>(OTel Span → Trace / Observation 맵퍼)"]
+    Mapper --> CHWriter["ClickhouseWriter (Batch Insert)"]
+```
+
+### OTel 맵퍼 핵심 알고리즘
+- **Trace ID / Span ID**: OpenTelemetry Hex 128-bit/64-bit ID를 Langfuse 표준 UUID로 상호 전환.
+- **Span Kind 맵핑**: `SPAN_KIND_CLIENT` / `SPAN_KIND_SERVER`는 Span observation으로, LLM 프롬프트/완성 속성(`gen_ai.prompt`, `gen_ai.completion`)을 가진 Span은 Generation observation으로 자동 변환.
+- **속성(Attributes) 정규화**: OTel Semantic Conventions (`gen_ai.system`, `gen_ai.request.model`, `gen_ai.usage.input_tokens`)을 추출하여 Langfuse 비용 산정 엔진에 주입.
+
 ---
 
 ## 관련 문서

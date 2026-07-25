@@ -122,6 +122,33 @@ INDEX idx_session_id session_id TYPE bloom_filter(0.001) GRANULARITY 1
 
 ClickHouse는 컬럼 스캔에 특화되어 있지만, 대시보드에서 특정 `trace_id` 단건 조회 시에는 해시 기반의 블룸 필터가 불필요한 스토리지 블록 접근을 차단하여 응답 속도를 크게 향상시킵니다.
 
+## 4. 데이터 롤업 단계별 동작 예시 (Step-by-Step Data Rollup Walkthrough)
+
+ClickHouse 메모리 및 디스크 레벨에서 데이터가 생성되어 AMT로 롤업되는 전체 4단계 메커니즘을 실제 데이터 흐름으로 예시합니다.
+
+```mermaid
+sequenceDiagram
+    participant Worker as Worker (ClickhouseWriter)
+    participant TN as traces_null (Null Engine)
+    participant MV as traces_7d_amt_mv (Materialized View)
+    participant AMT as traces_7d_amt (AggregatingMergeTree)
+    participant Query as tRPC Query (traceRouter.metrics)
+
+    Worker->>TN: 1. INSERT INTO traces_null (trace_id, project_id, timestamp, duration...)
+    Note over TN: 디스크 쓰기 없이 파이프라인 트리거만 작동
+    TN->>MV: 2. SELECT sumState(), argMaxState()... GROUP BY project_id, timestamp
+    MV->>AMT: 3. Partial Aggregate State 비동기 적재
+    Note over AMT: Background Merge 시점에<br/>sumMerge()로 최종 합산
+    Query->>AMT: 4. SELECT sumMerge(duration), argMaxMerge(name)<br/>WHERE timestamp >= now() - 7d
+    AMT-->>Query: 0.1ms 이내 대시보드 지표 반환
+```
+
+### 단계별 물리적 동작 원리
+1. **`INSERT INTO traces_null`**: 데이터가 들어오는 즉시 디스크 I/O 없이 메모리 스트림 상에서 MV로 이벤트 전달.
+2. **State 함수 집계 (`sumState`, `argMaxState`)**: 데이터를 즉시 계산하지 않고, ClickHouse 바이너리 형태의 `AggregateState` 중간값(Partial State)으로 변환.
+3. **디스크 롤업 (`AggregatingMergeTree`)**: 백그라운드 머지 스레드가 동작할 때 파편화된 Partial State 레코드들이 하나로 물리 병합(Merge).
+4. **Merge 함수 읽기 (`sumMerge`, `argMaxMerge`)**: tRPC 대시보드 쿼리가 호출될 때 이미 미리 계산된 State 레코드만 단순 합산하므로 수억 건의 Trace 레코드도 1ms 이내로 응답.
+
 ---
 
 ## 관련 문서
