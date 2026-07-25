@@ -57,6 +57,10 @@ export const events = {
   // can be sliced by surface without leaking ids.
   peek: ["opened", "closed", "expand_toggle", "resized", "open_in_new_tab"],
   generations: ["export"],
+  // Lazy JSON viewer perf telemetry (LFE-14419): learn whether the size gate
+  // and main-thread assumptions hold on real payloads. Metadata only —
+  // durations, char counts, tier; never payload content.
+  json_viewer: ["indexed", "slow_expand"],
   saved_views: [
     "create",
     "update",
@@ -124,6 +128,8 @@ export const events = {
     "copy_session_id_click",
     "truncated_observation_open_trace_click",
     "truncated_observation_download_click",
+    "inline_tools_toggled",
+    "system_prompt_toggled",
   ],
   eval_config: [
     "new_form_submit",
@@ -173,6 +179,7 @@ export const events = {
     "widget_copied_to_project",
     "widget_json_downloaded",
     "widget_copied_to_clipboard",
+    "widget_view_as_table",
     "widget_pasted",
     "widget_paste_rejected",
     "widget_duplicated",
@@ -229,6 +236,10 @@ export const events = {
     "compare_run_added",
     "compare_run_removed",
   ],
+  // Version-update reload notification (LFE-10978). `banner_shown` fires once
+  // per appearance; the two actions measure the reload-vs-dismiss split. No
+  // props carry user content.
+  version_update: ["banner_shown", "reload_clicked", "dismissed"],
   notification: ["click_link", "dismiss_notification"],
   toast: ["report_issue", "dismiss"],
   tag: [
@@ -240,10 +251,11 @@ export const events = {
   onboarding: [
     "code_example_tab_switch",
     "tracing_check_active",
+    "tracing_api_key_create_clicked",
     "tracing_agent_prompt_copy_clicked",
     "tracing_manual_docs_link_clicked",
   ],
-  user_settings: ["theme_changed"],
+  user_settings: ["theme_changed", "feature_preview_toggled"],
   project_settings: [
     "project_delete",
     "rename_form_submit",
@@ -279,10 +291,28 @@ export const events = {
     "message_sent",
     "community_hours_click",
   ], // also used on landing page for consistency
-  in_app_agent: ["new_chat_started", "new_chat_turn"],
+  in_app_agent: [
+    "entry_point_click",
+    "new_chat_started",
+    "new_chat_turn",
+    "quick_action_started",
+  ],
   cmd_k_menu: ["opened", "search_entered", "navigated"],
   spend_alert: ["created", "updated", "deleted"],
-  sidebar: ["book_a_call_clicked", "v4_beta_toggled"],
+  sidebar: [
+    "book_a_call_clicked",
+    "v4_beta_toggled",
+    "v4_migration_card_clicked",
+  ],
+  v4_migration: [
+    "in_app_agent_opened",
+    "coding_agent_prompt_copied",
+    "delay_badge_clicked",
+    "project_chip_clicked",
+    "contact_book_call_clicked",
+    "contact_support_clicked",
+    "status_row_clicked",
+  ],
   // Filter/search-bar usage analytics (LFE-10781). METADATA ONLY — payloads
   // never carry a raw filter value, search text, or AI prompt (PII). Only
   // type/column/operator/key(field-name)/counts/lengths/booleans/enums.
@@ -291,6 +321,10 @@ export const events = {
     "applied",
     "cleared",
     "facet_operator_toggled",
+    "active_only_toggled",
+    "facet_added",
+    "facet_mode_switched",
+    "sidebar_toggled",
     "search_submitted",
     "search_error",
     "ai_generate_requested",

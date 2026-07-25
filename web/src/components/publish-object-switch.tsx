@@ -134,6 +134,8 @@ export const PublishSessionSwitch = (props: {
   projectId: string;
   isPublic: boolean;
   size?: "icon" | "icon-xs";
+  /** When set, render as a full-width labeled menu item instead of an icon. */
+  label?: string;
 }) => {
   const capture = usePostHogClientCapture();
   const hasAccess = useHasProjectAccess({
@@ -155,6 +157,7 @@ export const PublishSessionSwitch = (props: {
       itemName="session"
       isPublic={props.isPublic}
       size={props.size}
+      label={props.label}
       onChange={(val) => {
         capture("session_detail:publish_button_click");
         return mut.mutateAsync({
@@ -196,7 +199,7 @@ const Base = (props: {
 
   return (
     <div className={cn("flex items-center gap-1", props.label && "w-full")}>
-      <div className={cn("text-sm font-semibold", props.label && "w-full")}>
+      <div className={cn("text-sm font-bold", props.label && "w-full")}>
         <Popover
           open={isOpen}
           onOpenChange={(open) => {

@@ -22,7 +22,10 @@ export type InAppAgentError =
   | { type: "rate_limit"; retryAt: number };
 
 const InAppAiAgentMessageSchema = AgUiMessageSchema.and(
-  z.object({ isLoading: z.boolean().optional() }),
+  z.object({
+    isLoading: z.boolean().optional(),
+    feedbackMessageId: z.string().optional(),
+  }),
 );
 
 export type InAppAiAgentMessage = z.infer<typeof InAppAiAgentMessageSchema>;
@@ -198,11 +201,13 @@ export function getDrawerMessages({
   isRunning,
   messages,
   pendingToolApprovals = [],
+  runningToolCallIds,
 }: {
   error: unknown;
   isRunning: boolean;
   messages: unknown;
   pendingToolApprovals?: readonly InAppAgentPendingToolApproval[];
+  runningToolCallIds?: readonly string[];
 }): InAppAgentWindowMessage[] {
   const parsedMessages = z.array(InAppAiAgentMessageSchema).parse(messages);
   const toolResults = getToolResultsByToolCallId(parsedMessages);
@@ -210,6 +215,9 @@ export function getDrawerMessages({
   const pendingApprovalsByToolCallId = new Map(
     pendingToolApprovals.map((approval) => [approval.id, approval]),
   );
+  const runningToolCallIdSet = runningToolCallIds
+    ? new Set(runningToolCallIds)
+    : null;
   const mappedPendingApprovalIds = new Set<string>();
 
   const mappedMessages: InAppAgentWindowMessage[] = [];
@@ -356,7 +364,11 @@ export function getDrawerMessages({
                 resultState = "error";
               } else if (result?.content !== undefined) {
                 resultState = "result";
-              } else if (isRunning && !error) {
+              } else if (
+                runningToolCallIdSet
+                  ? runningToolCallIdSet.has(toolCall.id)
+                  : isRunning && !error
+              ) {
                 resultState = "pending";
               } else {
                 resultState = "incomplete";
@@ -421,6 +433,9 @@ export function getDrawerMessages({
         id: message.id,
         ...(message.role === "assistant" && message.runId
           ? { runId: message.runId }
+          : {}),
+        ...(message.role === "assistant" && message.feedbackMessageId
+          ? { feedbackMessageId: message.feedbackMessageId }
           : {}),
         role,
         content: {

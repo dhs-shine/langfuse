@@ -15,7 +15,6 @@ import {
   convertDateToClickhouseDateTime,
   PreferredClickhouseService,
 } from "../clickhouse/client";
-import { measureAndReturn } from "../clickhouse/measureAndReturn";
 import { recordDistribution } from "../instrumentation";
 import { logger } from "../logger";
 import {
@@ -23,6 +22,7 @@ import {
   convertClickhouseTracesListToDomain,
 } from "./traces_converters";
 import {
+  getLastTraceTimestampsByProjectsFromTracesTable,
   getTraceByIdFromTracesTable,
   getTracesIdentifierForSessionFromTracesTable,
   hasAnyTrace,
@@ -57,6 +57,7 @@ import {
   eventsTraceMetadata,
   eventsTracesAggregation,
   eventsTracesScoresAggregation,
+  promptEventsForMetrics,
 } from "../queries/clickhouse-sql/query-fragments";
 import {
   eventsTableNativeUiColumnDefinitions,
@@ -561,6 +562,116 @@ export async function getObservationsWithModelDataFromEventsTable(
   });
 }
 
+export const getObservationMetricsForPromptsFromEvents = async (
+  projectId: string,
+  promptIds: string[],
+  {
+    fromTimestamp,
+    toTimestamp,
+  }: { fromTimestamp?: Date; toTimestamp?: Date } = {},
+) => {
+  const queryBuilder = new CTEQueryBuilder()
+    .withCTE(
+      "prompt_events",
+      promptEventsForMetrics({
+        projectId,
+        promptIds,
+        ...(fromTimestamp
+          ? { fromTimestamp: convertDateToClickhouseDateTime(fromTimestamp) }
+          : {}),
+        ...(toTimestamp
+          ? { toTimestamp: convertDateToClickhouseDateTime(toTimestamp) }
+          : {}),
+      }),
+    )
+    .from("prompt_events", "e")
+    .select(
+      "count(*) AS count",
+      "e.prompt_id AS prompt_id",
+      "e.prompt_version AS prompt_version",
+      "min(e.start_time) AS first_observation",
+      "max(e.start_time) AS last_observation",
+      "medianExact(arraySum(mapValues(mapFilter(x -> positionCaseInsensitive(x.1, 'input') > 0, e.usage_details)))) AS median_input_usage",
+      "medianExact(arraySum(mapValues(mapFilter(x -> positionCaseInsensitive(x.1, 'output') > 0, e.usage_details)))) AS median_output_usage",
+      "medianExact(e.cost_details['total']) AS median_total_cost",
+      "medianExact(dateDiff('millisecond', e.start_time, e.end_time)) AS median_latency_ms",
+    )
+    .whereRaw("e.is_deleted = 0")
+    .groupBy("e.prompt_id", "e.prompt_version")
+    .orderBy("ORDER BY e.prompt_version DESC");
+
+  const { query, params } = queryBuilder.buildWithParams();
+  const rows = await queryClickhouse<{
+    count: string;
+    prompt_id: string;
+    prompt_version: number;
+    first_observation: string;
+    last_observation: string;
+    median_input_usage: string;
+    median_output_usage: string;
+    median_total_cost: string;
+    median_latency_ms: string;
+  }>({
+    query,
+    params,
+    tags: { projectId },
+    preferredClickhouseService: "EventsReadOnly",
+  });
+
+  return rows.map((row) => ({
+    count: Number(row.count),
+    promptId: row.prompt_id,
+    promptVersion: row.prompt_version,
+    firstObservation: parseClickhouseUTCDateTimeFormat(row.first_observation),
+    lastObservation: parseClickhouseUTCDateTimeFormat(row.last_observation),
+    medianInputUsage: Number(row.median_input_usage),
+    medianOutputUsage: Number(row.median_output_usage),
+    medianTotalCost: Number(row.median_total_cost),
+    medianLatencyMs: Number(row.median_latency_ms),
+  }));
+};
+
+export const getObservationsWithPromptNameFromEvents = async (
+  projectId: string,
+  promptNames: string[],
+  {
+    fromTimestamp,
+    toTimestamp,
+  }: { fromTimestamp?: Date; toTimestamp?: Date } = {},
+) => {
+  const query = `
+  SELECT uniq(span_id) as count, prompt_name
+  FROM events_core
+  WHERE project_id = {projectId: String}
+  AND prompt_name IN ({promptNames: Array(String)})
+  AND prompt_name != ''
+  AND is_deleted = 0
+  ${fromTimestamp ? "AND start_time >= {fromTimestamp: DateTime64(6)}" : ""}
+  ${toTimestamp ? "AND start_time <= {toTimestamp: DateTime64(6)}" : ""}
+  GROUP BY prompt_name
+`;
+  const rows = await queryClickhouse<{ count: string; prompt_name: string }>({
+    query,
+    params: {
+      projectId,
+      promptNames,
+      fromTimestamp: fromTimestamp
+        ? convertDateToClickhouseDateTime(fromTimestamp)
+        : undefined,
+      toTimestamp: toTimestamp
+        ? convertDateToClickhouseDateTime(toTimestamp)
+        : undefined,
+    },
+    tags: { projectId },
+    preferredClickhouseService: "EventsReadOnly",
+  });
+
+  return rows.map((row) => ({
+    count: Number(row.count),
+    promptName: row.prompt_name,
+  }));
+};
+
 export const getTraceDeleteCursorPageFromEvents = async (props: {
   projectId: string;
   filter: FilterState;
@@ -774,23 +885,12 @@ async function getObservationsFromEventsTableInternal<T>(
 
   const { query, params } = queryBuilder.buildWithParams();
 
-  return measureAndReturn({
-    operationName: "getObservationsFromEventsTableInternal",
-    projectId,
-    input: {
-      params,
-      tags: { projectId },
-    },
-    fn: async (input) => {
-      return queryClickhouse<T>({
-        query,
-        params: input.params,
-        tags: input.tags,
-        clickhouseConfigs,
-        preferredClickhouseService:
-          preferredClickhouseService ?? "EventsReadOnly",
-      });
-    },
+  return queryClickhouse<T>({
+    query,
+    params,
+    tags: { projectId },
+    clickhouseConfigs,
+    preferredClickhouseService: preferredClickhouseService ?? "EventsReadOnly",
   });
 }
 
@@ -1005,22 +1105,11 @@ export const getTraceByIdFromEventsTable = async ({
 
   const { query, params } = queryBuilder.buildWithParams();
 
-  const records = await measureAndReturn({
-    operationName: "getTraceByIdFromEventsTable",
-    projectId,
-    input: {
-      params,
-      tags: { projectId },
-    },
-    fn: async (input) => {
-      return queryClickhouse<TraceRecordReadType>({
-        query,
-        params: input.params,
-        tags: input.tags,
-        preferredClickhouseService:
-          preferredClickhouseService ?? "EventsReadOnly",
-      });
-    },
+  const records = await queryClickhouse<TraceRecordReadType>({
+    query,
+    params,
+    tags: { projectId },
+    preferredClickhouseService: preferredClickhouseService ?? "EventsReadOnly",
   });
 
   const res = records.map((record) =>
@@ -1112,20 +1201,13 @@ export const hasAnyTraceFromEventsTable = async (
     LIMIT 1
   `;
 
-  const rows = await measureAndReturn({
-    operationName: "hasAnyTraceFromEventsTable",
-    projectId,
-    input: { params: { projectId } },
-    fn: async (input) => {
-      return queryClickhouse<{ 1: number }>({
-        query,
-        params: input.params,
-        tags: { projectId },
-        preferredClickhouseService: "EventsReadOnly",
-        clickhouseSettings: {
-          max_threads: 1,
-        },
-      });
+  const rows = await queryClickhouse<{ 1: number }>({
+    query,
+    params: { projectId },
+    tags: { projectId },
+    preferredClickhouseService: "EventsReadOnly",
+    clickhouseSettings: {
+      max_threads: 1,
     },
   });
 
@@ -1154,6 +1236,58 @@ export const hasAnyTracingData = async (projectId: string) => {
     await persistProjectHasTracesFlag(projectId);
   }
   return result;
+};
+
+/**
+ * Last event start_time per project from the events table, capped to the last
+ * 30 days (matches the traces-table variant's window).
+ */
+export const getLastTraceTimestampsByProjectsFromEventsTable = async ({
+  projectIds,
+}: {
+  projectIds: string[];
+}) => {
+  if (projectIds.length === 0) return [];
+
+  const query = `
+    SELECT
+      project_id,
+      max(start_time) as last_trace_at
+    FROM events_core
+    WHERE project_id IN ({projectIds: Array(String)})
+    AND start_time >= now() - INTERVAL 30 DAY
+    AND is_deleted = 0
+    GROUP BY project_id
+  `;
+
+  const rows = await queryClickhouse<{
+    project_id: string;
+    last_trace_at: string;
+  }>({
+    query,
+    params: { projectIds },
+    preferredClickhouseService: "EventsReadOnly",
+  });
+
+  return rows.map((row) => ({
+    projectId: row.project_id,
+    lastTraceAt: parseClickhouseUTCDateTimeFormat(row.last_trace_at),
+  }));
+};
+
+/**
+ * Routing wrapper for "last trace timestamp per project" reads.
+ *
+ * If data is only written into the events tables, we look there and go to the
+ * legacy traces table otherwise.
+ */
+export const getLastTraceTimestampsByProjects = async (
+  params: Parameters<typeof getLastTraceTimestampsByProjectsFromTracesTable>[0],
+) => {
+  if (env.LANGFUSE_MIGRATION_V4_WRITE_MODE !== "events_only") {
+    return getLastTraceTimestampsByProjectsFromTracesTable(params);
+  }
+  return getLastTraceTimestampsByProjectsFromEventsTable(params);
 };
 
 type PublicApiObservationsQuery = {
@@ -1391,26 +1525,15 @@ function applyCursorPagination(
 async function getObservationsRowsFromBuilder<T>(
   projectId: string,
   queryBuilder: QueryWithParams,
-  operationName = "getObservationsFromEventsTableForPublicApi_rows",
   extraTags: Record<string, string> = {},
 ): Promise<Array<T>> {
   const { query, params } = queryBuilder.buildWithParams();
 
-  return await measureAndReturn({
-    operationName,
-    projectId,
-    input: {
-      params,
-      tags: { projectId, ...extraTags },
-    },
-    fn: async (input) => {
-      return await queryClickhouse<T>({
-        query,
-        params: input.params,
-        tags: input.tags,
-        preferredClickhouseService: "EventsReadOnly",
-      });
-    },
+  return await queryClickhouse<T>({
+    query,
+    params,
+    tags: { projectId, ...extraTags },
+    preferredClickhouseService: "EventsReadOnly",
   });
 }
 
@@ -1430,21 +1553,11 @@ async function getObservationsCountFromEventsTableForPublicApiInternal(
 
   const { query, params } = queryBuilder.buildWithParams();
 
-  const result = await measureAndReturn({
-    operationName: "getObservationsFromEventsTableForPublicApi_count",
-    projectId,
-    input: {
-      params,
-      tags: { projectId },
-    },
-    fn: async (input) => {
-      return await queryClickhouse<{ count: string }>({
-        query,
-        params: input.params,
-        tags: input.tags,
-        preferredClickhouseService: "EventsReadOnly",
-      });
-    },
+  const result = await queryClickhouse<{ count: string }>({
+    query,
+    params,
+    tags: { projectId },
+    preferredClickhouseService: "EventsReadOnly",
   });
 
   return result;
@@ -1764,21 +1877,11 @@ async function getTracesFromEventsTableForPublicApiInternal<T>(
 
   const { query, params } = queryBuilder.buildWithParams();
 
-  const result = await measureAndReturn({
-    operationName: `getTracesFromEventsTableForPublicApi_${opts.select}`,
-    projectId,
-    input: {
-      params,
-      tags: { projectId },
-    },
-    fn: async (input) => {
-      return await queryClickhouse<T>({
-        query,
-        params: input.params,
-        tags: input.tags,
-        preferredClickhouseService: "EventsReadOnly",
-      });
-    },
+  const result = await queryClickhouse<T>({
+    query,
+    params,
+    tags: { projectId },
+    preferredClickhouseService: "EventsReadOnly",
   });
 
   return result;
@@ -2267,21 +2370,11 @@ export async function getAgentGraphDataFromEventsTable(params: {
       AND e.start_time <= {chMaxStartTime: DateTime64(3)}
   `;
 
-  return measureAndReturn({
-    operationName: "getAgentGraphDataFromEventsTable",
-    projectId,
-    input: {
-      params: { projectId, traceId, chMinStartTime, chMaxStartTime },
-      tags: { projectId },
-    },
-    fn: async (input) => {
-      return queryClickhouse({
-        query,
-        params: input.params,
-        tags: input.tags,
-        preferredClickhouseService: "EventsReadOnly",
-      });
-    },
+  return queryClickhouse({
+    query,
+    params: { projectId, traceId, chMinStartTime, chMaxStartTime },
+    tags: { projectId },
+    preferredClickhouseService: "EventsReadOnly",
   });
 }
 
@@ -2464,6 +2557,145 @@ export const getObservationsBatchIOFromEventsTable = async <
         }
       : {}),
   })) as Array<EventBatchIOResult<TIncludeExperiment, TIncludeToolCalls>>;
+};
+
+/**
+ * The single observation IO fields the stream/length helpers below can serve.
+ * `input`/`output` are raw `String` columns streamed as-is — note they may be a
+ * bare, unquoted string (not JSON) for plain-text prompts/completions, so the
+ * route serves them as opaque bytes, not `application/json`. `metadata` is
+ * reconstructed from the `metadata_names`/`metadata_values` `Map(String,String)`
+ * columns, so **every metadata value is emitted JSON-string-encoded** (a nested
+ * object comes out as an escaped string). Consumers must unwrap one level, exactly
+ * as the existing metadata read path does (`parseMetadataCHRecordToDomain`).
+ */
+export const OBSERVATION_IO_STREAM_FIELDS = [
+  "input",
+  "output",
+  "metadata",
+] as const;
+
+export type ObservationIoStreamField =
+  (typeof OBSERVATION_IO_STREAM_FIELDS)[number];
+
+// Closed set of SQL expressions keyed by the validated `field` enum — never
+// string-interpolated user input. The length pre-query and the byte stream share
+// this map + the WHERE/params below so they can never drift; a mismatch would
+// make the route's Content-Length integrity check wrong.
+const OBSERVATION_IO_FIELD_SELECT: Record<ObservationIoStreamField, string> = {
+  input: "e.input",
+  output: "e.output",
+  metadata:
+    "toJSONString(mapFromArrays(arrayReverse(e.metadata_names), arrayReverse(e.metadata_values)))",
+};
+
+// The ±1s window around `startTime` only prunes the primary key
+// (project_id, toStartOfMinute(start_time), xxHash32(trace_id)); it is a
+// performance hint, never an authorization control.
+const OBSERVATION_IO_WHERE = `
+    WHERE e.project_id = {projectId: String}
+      AND e.trace_id = {traceId: String}
+      AND e.span_id = {observationId: String}
+      AND e.start_time >= {minTimestamp: DateTime64(3)}
+      AND e.start_time <= {maxTimestamp: DateTime64(3)}`;
+
+interface ObservationIOReadOpts {
+  projectId: string;
+  traceId: string;
+  observationId: string;
+  field: ObservationIoStreamField;
+  /** The observation's startTime; bounds the read for primary-key pruning. */
+  startTime: Date;
+}
+
+function observationIOReadParams(opts: ObservationIOReadOpts) {
+  return {
+    projectId: opts.projectId,
+    traceId: opts.traceId,
+    observationId: opts.observationId,
+    minTimestamp: convertDateToClickhouseDateTime(
+      new Date(opts.startTime.getTime() - 1000),
+    ),
+    maxTimestamp: convertDateToClickhouseDateTime(
+      new Date(opts.startTime.getTime() + 1000),
+    ),
+  };
+}
+
+/**
+ * Byte length of one observation IO field — a cheap pre-query the streaming
+ * route runs BEFORE committing headers. It does two jobs the raw stream can't:
+ *  - distinguishes "not found" (no row → `null` → the route 404s) from "present
+ *    but empty" (row with 0 → empty 200), so a stale/skewed `startTime` yields a
+ *    diagnosable 404 rather than a misleading empty body; and
+ *  - gives the exact byte count for a `Content-Length` header, so a mid-stream
+ *    ClickHouse failure (truncated body) is detectable at the HTTP layer on ANY
+ *    ClickHouse version — independent of the `x-clickhouse-exception-tag` header
+ *    that raw-passthrough failure detection needs (≥25.11 only).
+ * Uses the SAME field expression + WHERE as the stream, so the length matches the
+ * bytes streamed. `length()` on a ClickHouse `String` is its byte count.
+ */
+export const getObservationIOFieldByteLengthFromEventsTable = async (
+  opts: ObservationIOReadOpts,
+): Promise<number | null> => {
+  const query = `
+    SELECT length(${OBSERVATION_IO_FIELD_SELECT[opts.field]}) AS len
+    FROM events_full e
+    ${OBSERVATION_IO_WHERE}
+    ORDER BY e.event_ts DESC
+    LIMIT 1
+  `;
+  const rows = await queryClickhouse<{ len: string }>({
+    query,
+    params: observationIOReadParams(opts),
+    tags: { projectId: opts.projectId, route: "observation-io-stream-length" },
+    preferredClickhouseService: "EventsReadOnly",
+  });
+  const first = rows[0];
+  return first ? Number(first.len) : null;
+};
+
+/**
+ * Stream ONE observation's single IO field (input | output | metadata) straight
+ * from ClickHouse to the caller as raw bytes, WITHOUT materializing the whole
+ * value in the Node process. Uses `FORMAT RawBLOB`, so ClickHouse emits exactly
+ * the field's bytes (no JSONEachRow envelope) and {@link queryClickhouseExecRaw}
+ * hands back the live HTTP body as a `Readable` for the caller to pipe onward.
+ * This is the transport primitive behind the lazy/streaming large-JSON viewer
+ * (LFE-11081): the browser can fetch a multi-hundred-MB field as a byte stream
+ * instead of forcing the server to buffer + JSON-serialize it in one shot.
+ *
+ * SECURITY: strictly tenant-scoped. The read is pinned to a single
+ * (project_id, trace_id, span_id) via parameterized predicates, so it can only
+ * ever return bytes for that one observation inside that one project — a wrong
+ * projectId yields zero rows (zero bytes). `field` is NOT interpolated user
+ * input: it selects from a fixed, closed set of SQL expressions. Callers MUST
+ * still authorize the (projectId, traceId) pair before calling — this function
+ * performs data isolation, not request authorization.
+ */
+export const streamObservationIOFieldFromEventsTable = (
+  opts: ObservationIOReadOpts,
+) => {
+  const query = `
+    SELECT ${OBSERVATION_IO_FIELD_SELECT[opts.field]} AS field
+    FROM events_full e
+    ${OBSERVATION_IO_WHERE}
+    ORDER BY e.event_ts DESC
+    LIMIT 1
+  `;
+
+  // FORMAT RawBLOB emits the selected String column's bytes with no escaping or
+  // delimiters; with LIMIT 1 that is exactly this observation's field value.
+  return queryClickhouseExecRaw({
+    query,
+    format: "RawBLOB",
+    params: observationIOReadParams(opts),
+    tags: {
+      projectId: opts.projectId,
+      route: "observation-io-stream",
+    },
+    preferredClickhouseService: "EventsReadOnly",
+  });
 };
 
 /**
@@ -2969,7 +3201,8 @@ export const getEventsForAnalyticsIntegrations = async function* (
   const records = queryClickhouseStream<Record<string, unknown>>({
     query,
     params,
-    tags: { projectId },
+    // Tagged explicitly: worker baggage isn't active during the deferred stream send.
+    tags: { projectId, surface: "worker", route: "analytics_integration" },
     clickhouseConfigs: {
       request_timeout: env.LANGFUSE_CLICKHOUSE_DATA_EXPORT_REQUEST_TIMEOUT_MS,
     },
@@ -3029,18 +3262,11 @@ export const hasAnySessionFromEventsTable = async (
     LIMIT 1
   `;
 
-  const rows = await measureAndReturn({
-    operationName: "hasAnySessionFromEventsTable",
-    projectId,
-    input: { params: { projectId } },
-    fn: async (input) => {
-      return queryClickhouse<{ 1: number }>({
-        query,
-        params: input.params,
-        tags: { projectId },
-        preferredClickhouseService: "EventsReadOnly",
-      });
-    },
+  const rows = await queryClickhouse<{ 1: number }>({
+    query,
+    params: { projectId },
+    tags: { projectId },
+    preferredClickhouseService: "EventsReadOnly",
   });
 
   return rows.length > 0;
@@ -3064,26 +3290,17 @@ export const getTraceMetadataByIdsFromEvents = async (props: {
 
   const { query, params } = builder.buildWithParams();
 
-  return measureAndReturn({
-    operationName: "getTraceMetadataByIdsFromEvents",
-    projectId: props.projectId,
-    input: {
-      params,
-      tags: { projectId: props.projectId },
-    },
-    fn: async (input) =>
-      queryClickhouse<{
-        id: string;
-        name: string;
-        user_id: string;
-        tags: string[];
-      }>({
-        query,
-        params: input.params,
-        tags: input.tags,
-        clickhouseConfigs: props.clickhouseConfigs,
-        preferredClickhouseService: "EventsReadOnly",
-      }),
+  return queryClickhouse<{
+    id: string;
+    name: string;
+    user_id: string;
+    tags: string[];
+  }>({
+    query,
+    params,
+    tags: { projectId: props.projectId },
+    clickhouseConfigs: props.clickhouseConfigs,
+    preferredClickhouseService: "EventsReadOnly",
   });
 };
 
@@ -3150,20 +3367,11 @@ export const getSessionMetricsFromEvents = async (props: {
 
   const { query, params } = builder.buildWithParams();
 
-  const rows = await measureAndReturn({
-    operationName: "getSessionMetricsFromEvents",
-    projectId: props.projectId,
-    input: {
-      params,
-      tags: { projectId: props.projectId },
-    },
-    fn: async (input) =>
-      queryClickhouse<SessionEventsMetricsRow>({
-        query,
-        params: input.params,
-        tags: input.tags,
-        preferredClickhouseService: "EventsReadOnly",
-      }),
+  const rows = await queryClickhouse<SessionEventsMetricsRow>({
+    query,
+    params,
+    tags: { projectId: props.projectId },
+    preferredClickhouseService: "EventsReadOnly",
   });
 
   return rows.map((row) => ({
@@ -3314,27 +3522,17 @@ export const getTracesIdentifierForSessionFromEvents = async (
 
   const { query, params } = queryBuilder.buildWithParams();
 
-  const rows = await measureAndReturn({
-    operationName: "getTracesIdentifierForSessionFromEvents",
-    projectId,
-    input: {
-      params,
-      tags: { projectId },
-    },
-    fn: async (input) => {
-      return await queryClickhouse<{
-        id: string;
-        user_id: string;
-        name: string;
-        timestamp: string;
-        environment: string;
-      }>({
-        query,
-        params: input.params,
-        tags: input.tags,
-        preferredClickhouseService: "EventsReadOnly",
-      });
-    },
+  const rows = await queryClickhouse<{
+    id: string;
+    user_id: string;
+    name: string;
+    timestamp: string;
+    environment: string;
+  }>({
+    query,
+    params,
+    tags: { projectId },
+    preferredClickhouseService: "EventsReadOnly",
   });
 
   return rows.map((row) => ({
