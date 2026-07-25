@@ -131,10 +131,11 @@ stateDiagram-v2
 
     state InviteCheck {
         [*] --> FindInvites : membershipInvitation.findMany<br/>(where: email)
-        FindInvites --> HasInvites{초대장 있음?}
-        HasInvites -- Yes --> AcceptAll : $transaction: create membership<br/>+ delete invitations
-        HasInvites -- No --> Done
-        AcceptAll --> Done
+        state check_invites <<choice>>
+        FindInvites --> check_invites
+        check_invites --> AcceptAll : 초대장 있음 (Yes)
+        AcceptAll --> Done : $transaction: create membership + delete invitations
+        check_invites --> Done : 초대장 없음 (No)
     }
 
     AssignMembership --> Dashboard : 대시보드 렌더링
