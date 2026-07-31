@@ -12,6 +12,7 @@ import {
 import { useInAppAiAgent } from "@/src/features/in-app-agent/components/InAppAiAgentProvider";
 import { useSupportDrawer } from "@/src/features/support-chat/SupportDrawerProvider";
 import { Button } from "@/src/components/ui/button";
+import { CodeView } from "@/src/components/ui/CodeJsonViewer";
 import { RainbowButton } from "@/src/components/magicui/rainbow-button";
 import { Separator } from "@/src/components/ui/separator";
 import {
@@ -42,6 +43,8 @@ import {
   useEvalUpgradeAssistantPlan,
   V4_CODING_AGENT_PROMPT,
 } from "@/src/features/v4-migration/useV4UpgradeAssistantSupport";
+import { useHasProjectAccess } from "@/src/features/rbac/utils/checkProjectAccess";
+import { api } from "@/src/utils/api";
 
 // Single source of truth for the v4-migration copy and content. Both surfaces
 // (side panel and modal) render these components — edit copy here only.
@@ -148,6 +151,30 @@ function ExternalLink({
   );
 }
 
+function ApiKeyCopyField({
+  label,
+  value,
+}: {
+  label: "Public key" | "Secret key";
+  value: string;
+}) {
+  const truncatedValue = `${value.slice(0, 8)}…${value.slice(-4)}`;
+
+  return (
+    <div className="flex min-w-0 items-stretch overflow-hidden rounded-md border">
+      <div className="bg-muted text-muted-foreground flex w-24 shrink-0 items-center justify-center border-r text-xs font-bold">
+        {label}
+      </div>
+      <CodeView
+        content={truncatedValue}
+        originalContent={value}
+        className="min-w-0 flex-1 [&>div]:rounded-none [&>div]:border-0"
+        lineWrap={false}
+      />
+    </div>
+  );
+}
+
 function MigrationCountChip({
   state,
   affectedLabel,
@@ -180,14 +207,14 @@ function V4MigrationSdkSection({ sdk }: { sdk: V4MigrationSdkState }) {
       <Chip variant="success">Up to date</Chip>
     ) : sdk.status === "otel_realtime" ? (
       <Chip variant="success">OTel real-time</Chip>
+    ) : sdk.status === "no_data" ? (
+      <Chip variant="success">No data detected</Chip>
     ) : sdk.status === "checking" ? (
       <Chip variant="warning">Checking</Chip>
     ) : sdk.status === "otel_header_required" ? (
       <Chip variant="warning">OTel header required</Chip>
     ) : sdk.status === "unknown" ? (
-      <Chip variant="warning">
-        {detectedSdkSeries.length > 0 ? "Needs review" : "Not detected"}
-      </Chip>
+      <Chip variant="warning">Needs review</Chip>
     ) : sdk.status === "error" ? (
       <Chip variant="warning">Check failed</Chip>
     ) : (
@@ -212,16 +239,10 @@ function V4MigrationSdkSection({ sdk }: { sdk: V4MigrationSdkState }) {
           </>
         ) : sdk.status === "otel_realtime" ? (
           "OTel data is using real-time ingestion. No ingestion header update is required."
+        ) : sdk.status === "no_data" ? (
+          `No ingestion data was detected in the last ${V4_MIGRATION_LOOKBACK_DAYS} days.`
         ) : sdk.status === "unknown" ? (
-          detectedSdkSeries.length > 0 ? (
-            "We could not recognize every detected SDK version. Verify that these SDKs are up to date."
-          ) : (
-            <>
-              We could not detect an attributed Langfuse SDK in traces from the
-              last 7 days. If this project uses one, verify that it is up to
-              date.
-            </>
-          )
+          "We could not recognize every detected SDK version. Verify that these SDKs are up to date."
         ) : sdk.status === "error" ? (
           "We could not check the latest traces for this project. Try again later."
         ) : sdk.status === "latest" ? (
@@ -289,11 +310,17 @@ export function V4MigrationHeaderContent({
   projectName,
   projectId,
   onNavigate,
+  titleRowClassName,
 }: {
   projectName?: string;
   projectId?: string;
   /** Fires when an internal link is followed so the surface can close. */
   onNavigate?: () => void;
+  /** Extra classes on the title row. The modal host passes a right gutter:
+   *  its dialog floats a fallback close button over the body's top-right
+   *  corner (the title is sr-only, so there is no DialogHeader row), which
+   *  would otherwise overlap the right-aligned status link. */
+  titleRowClassName?: string;
 }) {
   const capture = usePostHogClientCapture();
   const handleCopyPrompt = useCopyMigrationPrompt();
@@ -312,14 +339,59 @@ export function V4MigrationHeaderContent({
     Boolean(projectId) &&
     getProjectMigrationReadiness(migrationData) === "action-needed";
 
+  const [generatedKeys, setGeneratedKeys] = useState<{
+    projectId: string;
+    secretKey: string;
+    publicKey: string;
+  } | null>(null);
+  const generatedKeysForProject =
+    generatedKeys?.projectId === projectId ? generatedKeys : null;
+
+  const utils = api.useUtils();
+  const mutCreateProjectApiKey = api.projectApiKeys.create.useMutation({
+    onSuccess: () => utils.projectApiKeys.invalidate(),
+  });
+  const hasApiKeyCreateAccess = useHasProjectAccess({
+    projectId,
+    scope: "apiKeys:CUD",
+  });
+
   const handleShowPrompt = () => {
     capture("v4_migration:coding_agent_prompt_viewed");
     setPromptVisible(true);
+    if (
+      !projectId ||
+      !hasApiKeyCreateAccess ||
+      mutCreateProjectApiKey.isPending
+    )
+      return;
+
+    mutCreateProjectApiKey
+      .mutateAsync({
+        projectId,
+        note: "v4-migration-key",
+      })
+      .then(({ secretKey, publicKey }) => {
+        setGeneratedKeys({
+          projectId,
+          secretKey,
+          publicKey,
+        });
+        capture(`project_settings:api_key_create`);
+      })
+      .catch((error) => {
+        console.error(error);
+      });
   };
 
   return (
     <>
-      <div className="mb-1.5 flex items-baseline justify-between gap-2">
+      <div
+        className={cn(
+          "mb-1.5 flex items-baseline justify-between gap-2",
+          titleRowClassName,
+        )}
+      >
         <p className="min-w-0 text-lg font-bold">
           {projectName ? <>Migrate {projectName} to v4</> : "Migrate to v4"}
         </p>
@@ -331,7 +403,7 @@ export function V4MigrationHeaderContent({
           }}
           className="shrink-0 text-sm underline"
         >
-          Migration Status
+          View Status
         </Link>
       </div>
       <p className="text-muted-foreground mb-3 text-sm leading-relaxed">
@@ -368,6 +440,27 @@ export function V4MigrationHeaderContent({
             </span>
           )}
         </RainbowButton>
+        {promptVisible &&
+          projectId &&
+          hasApiKeyCreateAccess &&
+          generatedKeysForProject && (
+            <div className="mt-1 flex flex-col gap-2">
+              <p className="text-muted-foreground text-sm leading-relaxed">
+                If you are setting up the Langfuse CLI or skills for the first
+                time, use these project API keys.
+              </p>
+              <div className="flex flex-col gap-2">
+                <ApiKeyCopyField
+                  label="Public key"
+                  value={generatedKeysForProject.publicKey}
+                />
+                <ApiKeyCopyField
+                  label="Secret key"
+                  value={generatedKeysForProject.secretKey}
+                />
+              </div>
+            </div>
+          )}
       </div>
     </>
   );
@@ -412,16 +505,19 @@ export function V4MigrationDetailsContent({
     orgId: organization?.id,
     enabled: Boolean(projectId),
   });
+  const evalsUrl =
+    typeof projectId === "string" ? `/project/${projectId}/evals` : undefined;
   const handleMigrateEvalsWithAgent = async () => {
     capture("v4_migration:migrate_evals_with_agent_clicked");
     onNavigate?.();
+    if (evalsUrl) {
+      await router.push(evalsUrl).catch(() => undefined);
+    }
     setAgentOpen(true);
     await submitAgentMessage(upgradePlan.assistantPrompt, {
       newConversation: true,
     });
   };
-  const evalsUrl =
-    typeof projectId === "string" ? `/project/${projectId}/evals` : undefined;
   const integrationsUrl =
     typeof projectId === "string"
       ? `/project/${projectId}/settings/integrations`
@@ -437,7 +533,8 @@ export function V4MigrationDetailsContent({
           <div className="flex flex-col gap-3">
             <div className="flex items-center justify-between gap-2">
               <div className="flex items-center gap-2 text-base font-bold">
-                <LibraryBig className="h-4 w-4" /> Want to review first?
+                <LibraryBig className="h-4 w-4 shrink-0" /> Want to review
+                first?
               </div>
               <V4PreviewToggleRow projectId={projectId} />
             </div>
@@ -460,8 +557,8 @@ export function V4MigrationDetailsContent({
       <div className="flex flex-col gap-3">
         <div className="flex items-center justify-between gap-2">
           <div className="flex items-center gap-2 text-base font-bold">
-            <TriangleAlert className="h-4 w-4" /> What happens if I don&apos;t
-            update?
+            <TriangleAlert className="h-4 w-4 shrink-0" /> What happens if I
+            don&apos;t update?
           </div>
           <a
             href={V4_DOCS_URL}
@@ -577,7 +674,7 @@ export function V4MigrationDetailsContent({
                   {migrationData.apiUsage.map((usage) => (
                     <div
                       key={usage.endpoint}
-                      className="flex items-center justify-between gap-2 py-0.5"
+                      className="flex flex-wrap items-baseline justify-between gap-x-2 py-0.5"
                     >
                       <ExternalLink
                         href={DEPRECATED_API_MIGRATION_URL}
@@ -585,8 +682,12 @@ export function V4MigrationDetailsContent({
                       >
                         {usage.endpoint}
                       </ExternalLink>
-                      <span className="text-muted-foreground text-xs whitespace-nowrap">
-                        {numberFormatter(usage.count, 0, 2)} calls
+                      <span
+                        className="text-muted-foreground text-xs whitespace-nowrap"
+                        title={`Last seen at ${usage.lastSeen}`}
+                      >
+                        {numberFormatter(usage.count, 0, 2)} calls · last seen{" "}
+                        {formatCompactRelativeTime(new Date(usage.lastSeen))}
                       </span>
                     </div>
                   ))}
@@ -668,7 +769,7 @@ export function V4MigrationDetailsContent({
 
       <div className="flex flex-col gap-3">
         <div className="flex items-center gap-2 text-base font-bold">
-          <LifeBuoy className="h-4 w-4" /> Contact us
+          <LifeBuoy className="h-4 w-4 shrink-0" /> Contact us
         </div>
         <p className="text-muted-foreground text-sm">
           Need a hand with the update? We&apos;re here to help!
