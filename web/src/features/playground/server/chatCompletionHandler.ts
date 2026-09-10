@@ -29,7 +29,7 @@ import * as opentelemetry from "@opentelemetry/api";
 export default async function chatCompletionHandler(req: NextRequest) {
   try {
     const body = validateChatCompletionBody(await req.json());
-    const { userId } = await authorizeRequestOrThrow(body.projectId);
+    const { userId } = await authorizeRequestOrThrow(body.projectId, req);
 
     const blockedUsers = env.LANGFUSE_BLOCKED_USERIDS_CHATCOMPLETION;
     if (blockedUsers.has(userId)) {
@@ -182,7 +182,10 @@ export default async function chatCompletionHandler(req: NextRequest) {
 
     if (err instanceof Error) {
       const llmError = getLLMErrorInfo(err);
-      const statusCode = llmError?.statusCode ?? 500;
+      // Semantic AI SDK failures (e.g. no structured output) have no HTTP
+      // status. Treat them as client/provider operational errors, not 500s.
+      const statusCode =
+        llmError?.statusCode ?? (llmError?.kind === "ai-sdk" ? 400 : 500);
       const errorMessage = llmError?.message ?? "An internal error occurred";
 
       return NextResponse.json(

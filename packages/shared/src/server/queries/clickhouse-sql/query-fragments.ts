@@ -4,6 +4,7 @@
 
 import {
   EventsAggregationQueryBuilder,
+  EventsAggQueryBuilder,
   EventsQueryBuilder,
   EventsSessionAggregationQueryBuilder,
   ExperimentsAggregationFieldSetName,
@@ -16,20 +17,21 @@ import {
   SCORE_TO_TRACE_OBSERVATIONS_INTERVAL,
 } from "../../repositories/constants";
 import type { ClickhouseFilter } from "./clickhouse-filter";
+import { eventsTableTraceNameSql } from "../../../eventsTable";
 
 /**
  * Lightweight trace metadata query: one row per trace with name, user_id, tags.
- * Picks a row with non-empty trace_name via LIMIT 1 BY trace_id.
+ * Picks one row with a resolved trace name via LIMIT 1 BY trace_id.
  */
 export const eventsTraceMetadata = (projectId: string): EventsQueryBuilder =>
   new EventsQueryBuilder({ projectId })
     .selectRaw(
       "e.trace_id AS id",
-      "e.trace_name AS name",
+      `${eventsTableTraceNameSql} AS name`,
       "e.user_id AS user_id",
       "e.tags AS tags",
     )
-    .whereRaw("e.trace_name <> ''")
+    .whereRaw(`${eventsTableTraceNameSql} IS NOT NULL`)
     .whereRaw("e.is_deleted = 0")
     .limitBy("e.trace_id");
 
@@ -178,7 +180,7 @@ const scoreTimestampLowerBound = (
  * Observation level: Aggregates scores by (trace_id, observation_id), always uses nested structure
  * Trace level: Aggregates scores by (project_id, trace_id), filters observation_id IS NULL
  */
-export const buildScoresAggregationCTE = (
+const buildScoresAggregationCTE = (
   params: BaseScoresAggregationParams,
 ): { query: string; params: Record<string, any> } => {
   const queryParams: Record<string, any> = {
@@ -439,6 +441,33 @@ export const eventsExperimentsRootSpans = (params: {
   );
 
 /**
+ * Worst observation level per experiment item, computed across the item's
+ * full subtree. Filter tables before joining (query-join-filter-before):
+ * scoped to the experiments in play so the CTE never scans the project.
+ */
+export const experimentItemLevelsAggregation = (params: {
+  projectId: string;
+  experimentIds: string[];
+}): { query: string; params: Record<string, any> } =>
+  new EventsAggQueryBuilder({
+    projectId: params.projectId,
+    groupByColumn: "e.experiment_id, e.experiment_item_id",
+    selectExpression: `e.experiment_id AS experiment_id,
+      e.experiment_item_id AS experiment_item_id,
+      multiIf(
+        countIf(e.level = 'ERROR') > 0, 'ERROR',
+        countIf(e.level = 'WARNING') > 0, 'WARNING',
+        countIf(e.level = 'DEFAULT') > 0, 'DEFAULT',
+        'DEBUG'
+      ) AS aggregated_level`,
+  })
+    .whereRaw("e.experiment_id IN ({itemLevelExperimentIds: Array(String)})", {
+      itemLevelExperimentIds: params.experimentIds,
+    })
+    .whereRaw("e.experiment_id != ''")
+    .buildWithParams();
+
+/**
  * Session-level scores aggregation CTE.
  * Groups scores by (project_id, session_id), computing numeric/boolean averages
  * and categorical value lists.
@@ -556,7 +585,21 @@ export const buildScoreRowsCTE = (params: BaseScoresParams): CTEWithSchema => {
   };
 };
 
-export const buildScoresCTE = (params: BaseScoresParams): CTEWithSchema => {
+/**
+ * `level: "any"` keeps BOTH levels in one CTE, for the level-agnostic score
+ * filters (a score matches whether it was recorded on an observation or on the
+ * trace). A caller that aggregates must keep the level in its GROUP BY, or a
+ * name present at both levels collapses into a single averaged value and a
+ * numeric comparison stops meaning "at either level".
+ *
+ * Only this CTE understands "any" — the other score fragments branch on
+ * `level === "trace"` and would silently treat it as observation-level.
+ */
+type ScoresCTEParams = Omit<BaseScoresParams, "level"> & {
+  level: BaseScoresParams["level"] | "any";
+};
+
+export const buildScoresCTE = (params: ScoresCTEParams): CTEWithSchema => {
   const queryParams: Record<string, any> = {
     projectId: params.projectId,
   };
@@ -565,10 +608,12 @@ export const buildScoresCTE = (params: BaseScoresParams): CTEWithSchema => {
     queryParams.startTimeFrom = params.startTimeFrom;
   }
 
-  const isTraceLevel = params.level === "trace";
-  const observationFilter = isTraceLevel
-    ? "AND observation_id IS NULL"
-    : "AND observation_id IS NOT NULL";
+  const observationFilter =
+    params.level === "any"
+      ? ""
+      : params.level === "trace"
+        ? "AND observation_id IS NULL"
+        : "AND observation_id IS NOT NULL";
 
   const query = `
     SELECT

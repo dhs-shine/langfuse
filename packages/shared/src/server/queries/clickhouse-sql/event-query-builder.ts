@@ -2,7 +2,11 @@ import {
   OBSERVATION_FIELD_GROUPS_PUBLIC_API,
   type ObservationFieldGroupPublicApi,
 } from "../../../domain/observation-field-groups";
-import { eventsTableIsRootObservationSql } from "../../../eventsTable";
+import {
+  eventsTableIsRootObservationSql,
+  eventsTableTraceNameAggregationSql,
+  eventsTableTraceNameSelectSql,
+} from "../../../eventsTable";
 import { OBSERVATIONS_TO_TRACE_INTERVAL } from "../../repositories/constants";
 import { FilterList, StringFilter } from "./clickhouse-filter";
 
@@ -53,7 +57,7 @@ export interface SplitQueryBuilder extends QueryWithParams {
  */
 export type OrderByDirection = "ASC" | "DESC";
 export type OrderByEntry = { column: string; direction: OrderByDirection };
-export type OrderByColumnsOptions = {
+type OrderByColumnsOptions = {
   eventTableAlias?: string;
   /**
    * Prepend `<alias>.project_id, toStartOfMinute(<alias>.start_time)` so the
@@ -128,7 +132,8 @@ const EVENTS_FIELDS = {
   public: "e.public as public",
   userId: 'e.user_id as "user_id"',
   sessionId: 'e.session_id as "session_id"',
-  traceName: 'e.trace_name as "trace_name"',
+  // String-typed on purpose; see eventsTableTraceNameSelectSql (LFE-14924).
+  traceName: `${eventsTableTraceNameSelectSql} as "trace_name"`,
 
   // Time fields
   startTime: 'e.start_time as "start_time"',
@@ -469,6 +474,7 @@ const FIELD_SETS = {
     "toolCalls",
     "toolCallNames",
     "experimentId",
+    "experimentName",
     "experimentItemRootSpanId",
     "experimentItemExpectedOutput",
     "experimentItemMetadata",
@@ -521,7 +527,7 @@ const EVENTS_AGGREGATION_FIELDS = {
   projectId: "project_id",
 
   // Aggregated fields
-  name: "argMaxIf(trace_name, event_ts, trace_name <> '') AS name",
+  name: `${eventsTableTraceNameAggregationSql} AS name`,
   timestamp: "min(start_time) as timestamp",
   environment:
     "argMaxIf(environment, event_ts, environment <> '') AS environment",
@@ -563,6 +569,12 @@ const EVENTS_AGGREGATION_FIELDS = {
   tags: "argMaxIf(tags, event_ts, notEmpty(tags)) AS tags",
   release: "argMaxIf(release, event_ts, release <> '') AS release",
 
+  // Evaluator execution fields are stamped on every internal evaluation span.
+  evaluator_id:
+    "argMaxIf(evaluator_id, event_ts, evaluator_id <> '') AS evaluator_id",
+  evaluation_rule_id:
+    "argMaxIf(evaluation_rule_id, event_ts, evaluation_rule_id <> '') AS evaluation_rule_id",
+
   // experiment fields
   experiment_id: "any(experiment_id) as experiment_id",
 } as const;
@@ -583,7 +595,7 @@ const AGGREGATION_FIELD_SETS = {
  * // Use when you need to query across all projects (use with caution!)
  * const builder = new EventsQueryBuilder({ projectId: NoProjectId });
  */
-export const NoProjectId = Symbol("NoProjectId");
+const NoProjectId = Symbol("NoProjectId");
 export type NoProjectIdType = typeof NoProjectId;
 
 /**
@@ -720,6 +732,18 @@ abstract class AbstractQueryBuilder {
   }
 
   /**
+   * Keep up to `limit` rows per unique combination of columns.
+   */
+  limitByCount(limit: number, ...columns: string[]): this {
+    if (columns.length > 0) {
+      this.limitByClause = `LIMIT {limitByCount: Int32} BY ${columns.join(", ")}`;
+      this.params.limitByCount = limit;
+    }
+
+    return this;
+  }
+
+  /**
    * Conditionally apply builder operations
    */
   when<T extends AbstractQueryBuilder>(
@@ -777,6 +801,19 @@ abstract class AbstractQueryBuilder {
 abstract class AbstractCTEQueryBuilder extends AbstractQueryBuilder {
   protected ctes: string[] = [];
   protected joins: string[] = [];
+  protected sampleRowCount: number | null = null;
+
+  /** sampleRows caps the base table read at `rows` events via ClickHouse SAMPLE. */
+  sampleRows(rows: number): this {
+    if (rows > 0) {
+      this.sampleRowCount = Math.floor(rows);
+    }
+    return this;
+  }
+
+  protected buildSampleSection(): string {
+    return this.sampleRowCount === null ? "" : ` SAMPLE ${this.sampleRowCount}`;
+  }
 
   /**
    * Add a CTE (Common Table Expression) to the query
@@ -943,7 +980,7 @@ abstract class BaseEventsQueryBuilder<
 
     // FROM - choose table based on data requirements
     const tableName = this.getTableName();
-    parts.push(`FROM ${tableName} e`);
+    parts.push(`FROM ${tableName} e${this.buildSampleSection()}`);
 
     // JOINs
     const joinSection = this.buildJoinSection();
@@ -1862,7 +1899,7 @@ export class EventsAggQueryBuilder extends AbstractCTEQueryBuilder {
     parts.push(`SELECT ${this.selectExpression}`);
 
     // FROM - use events_core for reads (lightweight table with truncated I/O)
-    parts.push("FROM events_core e");
+    parts.push(`FROM events_core e${this.buildSampleSection()}`);
 
     // JOINs
     const joinSection = this.buildJoinSection();
@@ -1919,7 +1956,9 @@ const EXPERIMENTS_AGGREGATION_FIELDS = {
     "nullIf(any(e.experiment_dataset_id), '') AS experiment_dataset_id",
   startTime: "min(e.start_time) AS start_time",
   itemCount: "uniq(e.experiment_item_id) AS item_count",
-  errorCount: "countIf(e.level = 'ERROR') AS error_count",
+  // Distinct items that carry any ERROR event, so the number matches the
+  // items-view Status=ERROR list the badge opens.
+  errorCount: "uniqIf(e.experiment_item_id, e.level = 'ERROR') AS error_count",
   prompts:
     "groupUniqArrayIf(tuple(e.prompt_name, e.prompt_version), e.prompt_name != '') AS prompts",
   experimentMetadata:

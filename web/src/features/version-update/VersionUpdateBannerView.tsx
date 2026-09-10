@@ -1,3 +1,4 @@
+/* eslint-disable @repo/no-style-props */
 import { RotateCw, Sparkles, X } from "lucide-react";
 import { Button } from "@/src/components/ui/button";
 import { cn } from "@/src/utils/tailwind";
@@ -20,8 +21,7 @@ export type VersionUpdateBannerViewProps = {
  * instead of overlapping it.
  *
  * Purely props-driven (no store/context/data) so it renders in isolation — see
- * `VersionUpdateBannerView.stories.tsx`. The connected {@link VersionUpdateBanner}
- * wires it to the store, the overlay layer, and analytics.
+ * `VersionUpdateBannerView.stories.tsx`.
  *
  * We prompt rather than auto-reload: reloading would discard unsaved work (open
  * annotations, editors); the user reloads when it is safe for them.
@@ -35,6 +35,9 @@ export function VersionUpdateBannerView({
     <div
       role="status"
       aria-live="polite"
+      // Peek (and any other dismissable overlay) must not close when this
+      // banner is dismissed — it lives in a higher overlay layer than the peek.
+      data-ignore-outside-interaction
       className={cn(
         // `top-banner-offset` = safe-area + any registered top banner's height,
         // so the pill sits below a full-width top banner (e.g. PaymentBanner)

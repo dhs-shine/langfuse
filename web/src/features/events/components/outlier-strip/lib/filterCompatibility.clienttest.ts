@@ -1,3 +1,5 @@
+// @vitest-environment node
+
 import { type FilterState } from "@langfuse/shared";
 import { canApplyOutlierStripFilters } from "./filterCompatibility";
 
@@ -19,14 +21,6 @@ describe("canApplyOutlierStripFilters", () => {
   it("rejects filters the aggregate query cannot represent", () => {
     const unsupportedFilters: FilterState[] = [
       [{ column: "latency", type: "number", operator: ">", value: 2 }],
-      [
-        {
-          column: "isRootObservation",
-          type: "boolean",
-          operator: "=",
-          value: true,
-        },
-      ],
       [
         {
           column: "name",

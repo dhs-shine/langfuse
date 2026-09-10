@@ -1,9 +1,11 @@
 export * from "./constants";
 export { decodeUnicodeEscapesOnly } from "./utils/unicode";
+export { stringify, stringifyForCsv } from "./utils/stringify";
 export * from "./interfaces/filters";
 export * from "./interfaces/orderBy";
 export * from "./interfaces/cloudConfigSchema";
 export * from "./interfaces/parseDbOrg";
+export * from "./interfaces/billingProvider";
 export * from "./interfaces/customLLMProviderConfigSchemas";
 export * from "./tableDefinitions";
 export * from "./types";
@@ -16,6 +18,7 @@ export * from "./utils/stringChecks";
 export * from "./utils/objects";
 export * from "./utils/typeChecks";
 export * from "./utils/prompts";
+export * from "./utils/productUrl";
 export * from "./utils/jsonSchemaValidation";
 export * from "./utils/chatml";
 export * from "./utils/math";
@@ -34,11 +37,17 @@ export * from "./server/llm/promptToolConfig";
 
 // evals
 export * from "./features/evals/types";
+export * from "./features/evals/evalExecutionMetadata";
 export * from "./features/evals/outputDefinition";
-export * from "./features/evals/utilities";
+export * from "./features/evals/codeEvalConstants";
+export {
+  extractValueFromObject,
+  extractValueFromObjectAsString,
+} from "./features/evals/utilities";
 export * from "./features/evals/observationForEval";
 export * from "./features/evals/evalConfigBlocking";
 export * from "./features/evals/validateEvaluatorFilters";
+export * from "./features/evals/experimentRuleNormalization";
 // table actions
 export * from "./features/batchExport/types";
 export * from "./features/batchAction/types";

@@ -2,8 +2,6 @@ import { z } from "zod";
 import { singleFilter } from "@langfuse/shared";
 import { type views } from "@langfuse/shared/query";
 
-// Exported to silence @typescript-eslint/no-unused-vars v8 warning
-// (used for type extraction via typeof, which is a legitimate pattern)
 export const FilterArray = z.array(singleFilter);
 
 /**
@@ -57,6 +55,23 @@ const defineField = (
   current,
   legacy,
 });
+
+const evaluatorFilterDefinitions = [
+  defineField(
+    "evaluatorId",
+    sourceSpec("Evaluator", {
+      uiTableId: "evaluatorId",
+      aliases: ["Evaluator ID"],
+    }),
+  ),
+  defineField(
+    "isEvaluatorTest",
+    sourceSpec("Evaluator test run", {
+      uiTableId: "isEvaluatorTest",
+      aliases: ["Evaluator execution"],
+    }),
+  ),
+] as const;
 
 const viewFilterDefinitions: Record<
   ViewName,
@@ -117,7 +132,10 @@ const viewFilterDefinitions: Record<
       "providedModelName",
       sourceSpec("Model", { uiTableId: "model" }),
     ),
-    defineField("level", sourceSpec("Level", { uiTableId: "level" })),
+    defineField(
+      "level",
+      sourceSpec("Status", { uiTableId: "level", aliases: ["Level"] }),
+    ),
     defineField(
       "toolNames",
       sourceSpec("Tool Names (Available)", { uiTableId: "toolNames" }),
@@ -144,9 +162,13 @@ const viewFilterDefinitions: Record<
       "environment",
       sourceSpec("Environment", { uiTableId: "environment" }),
     ),
+    ...evaluatorFilterDefinitions,
     defineField(
       "release",
-      sourceSpec("Observation Release", { uiTableId: "release" }),
+      sourceSpec("Release", {
+        uiTableId: "release",
+        aliases: ["Observation Release"],
+      }),
     ),
     defineField("version", sourceSpec("Version", { uiTableId: "version" })),
     // Experiment fields (v2 only - experiment data only exists in events table)
@@ -161,6 +183,10 @@ const viewFilterDefinitions: Record<
     defineField(
       "experimentId",
       sourceSpec("Experiment ID", { uiTableId: "experimentId" }),
+    ),
+    defineField(
+      "isRootObservation",
+      sourceSpec("Is Root Observation", { uiTableId: "isRootObservation" }),
     ),
   ],
   "scores-numeric": [
@@ -212,6 +238,7 @@ const viewFilterDefinitions: Record<
       "traceVersion",
       sourceSpec("Version", { uiTableId: "version" }),
     ),
+    ...evaluatorFilterDefinitions,
   ],
   "scores-boolean": [
     defineField("name", sourceSpec("Score Name", { uiTableId: "scoreName" })),
@@ -259,6 +286,7 @@ const viewFilterDefinitions: Record<
       "traceVersion",
       sourceSpec("Version", { uiTableId: "version" }),
     ),
+    ...evaluatorFilterDefinitions,
   ],
   "scores-categorical": [
     defineField("name", sourceSpec("Score Name", { uiTableId: "scoreName" })),
@@ -306,6 +334,7 @@ const viewFilterDefinitions: Record<
       "traceVersion",
       sourceSpec("Version", { uiTableId: "version" }),
     ),
+    ...evaluatorFilterDefinitions,
   ],
 };
 
@@ -480,6 +509,13 @@ export const normalizeStoredWidgetFiltersForEditor = (
     unsupportedFilters: partitionedFilters.unsupportedFilters,
   };
 };
+
+/** displayNameForFilterColumn resolves any filter column spelling to the label the filter builder shows. */
+export const displayNameForFilterColumn = (column: string): string =>
+  allWidgetFilterMappings.find(
+    (mapping) =>
+      mapping.viewName === column || matchesFilterMapping(mapping, column),
+  )?.uiTableName ?? column;
 
 export const mapViewFilterToUiTableFilter = (
   view: z.infer<typeof views>,

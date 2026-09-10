@@ -5,6 +5,7 @@ import {
   planEventFacetQueries,
   splitFacetFilter,
 } from "@/src/features/events/lib/facet-query-plan";
+import { sortOptionValues } from "@/src/features/filters";
 
 type EventFilterOptionColumnsInput =
   RouterInputs["events"]["filterOptions"]["columns"];
@@ -34,10 +35,14 @@ const ALL_EVENT_FILTER_OPTION_COLUMNS = [
   "type",
   "userId",
   "version",
+  "release",
   "sessionId",
   "level",
   "environment",
   "ingestionApiKey",
+  "ingestionSdkName",
+  "ingestionSdkVersion",
+  "ingestionSource",
   "experimentDatasetId",
   "experimentId",
   "experimentName",
@@ -317,17 +322,22 @@ export function useEventsFilterOptions({
     return {
       environment: rawData.environment ?? undefined,
       ingestionApiKey: rawData.ingestionApiKey ?? undefined,
+      ingestionSdkName: rawData.ingestionSdkName ?? undefined,
+      ingestionSdkVersion: rawData.ingestionSdkVersion ?? undefined,
+      ingestionSource: rawData.ingestionSource ?? undefined,
       name: rawData.name ?? undefined,
       type: rawData.type ?? undefined,
       level: rawData.level ?? undefined,
       providedModelName: rawData.providedModelName ?? undefined,
       modelId: rawData.modelId ?? undefined,
       promptName: rawData.promptName ?? undefined,
-      traceTags: rawData.traceTags ?? undefined,
+      // Tags read A→Z; every other facet keeps its count-descending order.
+      traceTags: sortOptionValues(rawData.traceTags),
       traceName: rawData.traceName ?? undefined,
       userId: rawData.userId ?? undefined,
       sessionId: rawData.sessionId ?? undefined,
       version: rawData.version ?? undefined,
+      release: rawData.release ?? undefined,
       experimentDatasetId: rawData.experimentDatasetId ?? undefined,
       experimentId: rawData.experimentId ?? undefined,
       experimentName: rawData.experimentName ?? undefined,
@@ -340,9 +350,11 @@ export function useEventsFilterOptions({
       timeToFirstToken: [],
       tokensPerSecond: [],
       inputTokens: [],
+      cachedInputTokens: [],
       outputTokens: [],
       totalTokens: [],
       inputCost: [],
+      cachedInputCost: [],
       outputCost: [],
       totalCost: [],
       score_categories: scoreCategories,

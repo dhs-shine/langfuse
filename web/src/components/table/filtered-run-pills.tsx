@@ -1,3 +1,4 @@
+/* eslint-disable @repo/no-style-props, @repo/no-null-render */
 import { Badge } from "@/src/components/ui/badge";
 import {
   HoverCard,
