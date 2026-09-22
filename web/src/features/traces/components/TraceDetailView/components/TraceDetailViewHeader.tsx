@@ -3,43 +3,31 @@
  *
  * Contains:
  * - Title row with ItemBadge, trace name, options menu
- * - Action buttons (Dataset, Annotate, Queue, Comments)
- * - Metadata badges (timestamp, latency, session, user, environment, release, version, cost, usage)
+ * - Action buttons (Add to, Score, Comment)
+ * - Metadata badges (timestamp, environment, release, version, target trace)
+ * - Trace-level score chips
  *
  * Memoized to prevent unnecessary re-renders when tab state changes.
  */
 
-import { memo, useMemo } from "react";
+import { memo } from "react";
 import {
   type TraceDomain,
   type ScoreDomain,
-  AnnotationQueueObjectType,
   LangfuseInternalTraceEnvironment,
 } from "@langfuse/shared";
 import { type WithStringifiedMetadata } from "@/src/utils/clientSideDomainTypes";
-import { type ObservationReturnTypeWithMetadata } from "@/src/server/api/routers/traces";
 import { ItemBadge } from "@/src/components/ItemBadge";
-import { DetailHeaderActionsMenuController } from "@/src/features/traces/components/DetailHeaderActionsMenuController";
-import {
-  ExistingDatasetItemsDropdownMenuController,
-  NewDatasetItemFromExistingObjectDialogController,
-  useDatasetItemFromTraceOrObservation,
-} from "@/src/features/datasets";
+import { ConnectedDetailHeaderActionsMenuController } from "@/src/features/traces/components/DetailHeaderActionsMenuController";
 import { AnnotateDrawerController } from "@/src/features/scores";
 import { ActionButtonCountBadge } from "@/src/components/ui/action-button-count-badge";
-import { AnnotationQueueItemDropdownMenuController } from "@/src/features/annotation-queues/components/AnnotationQueueItemDropdownMenuController";
-import { AnnotationQueueItemCountBadge } from "@/src/features/annotation-queues/components/AnnotationQueueItemCountBadge";
+import { ConnectedTraceObservationAddToDropdownMenuController } from "@/src/features/traces/components/ConnectedTraceObservationAddToDropdownMenuController";
 import {
-  SessionBadge,
-  UserIdBadge,
   EnvironmentBadge,
   ReleaseBadge,
   VersionBadge,
   TargetTraceBadge,
 } from "../../TraceMetadataBadges";
-import { LatencyBadge } from "../../ObservationMetadataBadgesSimple/ObservationMetadataBadgesSimple";
-import { CostBadge, UsageBadge } from "../../ObservationMetadataBadgesTooltip";
-import { aggregateTraceMetrics } from "@/src/features/traces/fns/traceAggregation";
 import { resolveEvalExecutionMetadata } from "@/src/features/traces/fns/resolveMetadata";
 import { useViewPreferences } from "@/src/features/traces/contexts/ViewPreferencesContext";
 import { CollapsibleBadgeRow } from "@/src/features/traces/components/CollapsibleBadgeRow";
@@ -48,7 +36,6 @@ import { Button } from "@/src/components/ui/button";
 import {
   ChevronDown,
   EllipsisVertical,
-  ListPlus,
   LockIcon,
   MessageSquare,
   MessageSquareOff,
@@ -70,7 +57,6 @@ export interface TraceDetailViewHeaderProps {
     input: string | null;
     output: string | null;
   };
-  observations: ObservationReturnTypeWithMetadata[];
   parsedMetadata: unknown;
   projectId: string;
   traceScores: WithStringifiedMetadata<ScoreDomain>[];
@@ -83,7 +69,6 @@ export interface TraceDetailViewHeaderProps {
 
 export const TraceDetailViewHeader = memo(function TraceDetailViewHeader({
   trace,
-  observations,
   parsedMetadata,
   projectId,
   traceScores,
@@ -92,21 +77,6 @@ export const TraceDetailViewHeader = memo(function TraceDetailViewHeader({
 }: TraceDetailViewHeaderProps) {
   const { isAnnotationMode } = useViewPreferences();
   const isMobile = useIsMobile();
-  const aggregatedMetrics = useMemo(
-    () => aggregateTraceMetrics(observations),
-    [observations],
-  );
-  const {
-    existingDatasetItems,
-    hasAccess: hasDatasetAccess,
-    captureNewDatasetItemFormOpen,
-  } = useDatasetItemFromTraceOrObservation({
-    projectId,
-    traceId: trace.id,
-  });
-  const datasetCount = existingDatasetItems.length;
-  const hasExistingDatasetItems = datasetCount > 0;
-
   const targetTraceId =
     trace.environment === LangfuseInternalTraceEnvironment.LLMJudge
       ? resolveEvalExecutionMetadata(parsedMetadata)
@@ -121,17 +91,15 @@ export const TraceDetailViewHeader = memo(function TraceDetailViewHeader({
     <div className="@container shrink-0 space-y-2 border-b p-2">
       {/* Title row with actions */}
       <div className="grid w-full grid-cols-1 items-start gap-2 @2xl:grid-cols-[auto_auto] @2xl:justify-between">
-        <div className="flex w-full flex-row items-center gap-1">
+        <div className="flex w-full min-w-0 flex-row items-center gap-1">
           <ItemBadge type="TRACE" isSmall />
           <span
-            className={cn(
-              "line-clamp-2 min-w-0 font-bold break-all md:break-normal md:wrap-break-word",
-              isMobile && "flex-1",
-            )}
+            className={cn("min-w-0 truncate font-bold", isMobile && "flex-1")}
+            title={trace.name || trace.id}
           >
             {trace.name || trace.id}
           </span>
-          <DetailHeaderActionsMenuController
+          <ConnectedDetailHeaderActionsMenuController
             idItems={[{ id: trace.id, name: "Trace ID" }]}
             projectId={projectId}
             webCallout={{
@@ -139,20 +107,19 @@ export const TraceDetailViewHeader = memo(function TraceDetailViewHeader({
               sessionId: trace.sessionId ?? null,
             }}
           >
-            {({ Trigger }) => (
-              <Trigger asChild>
-                <Button
-                  aria-label="Options"
-                  className="mt-0.5 shrink-0"
-                  size="icon-xs"
-                  title="Options"
-                  variant="ghost"
-                >
-                  <EllipsisVertical className="h-4 w-4" />
-                </Button>
-              </Trigger>
+            {({ getTriggerProps }) => (
+              <Button
+                aria-label="Options"
+                className="mt-0.5 shrink-0"
+                size="icon-xs"
+                title="Options"
+                variant="ghost"
+                {...getTriggerProps()}
+              >
+                <EllipsisVertical className="h-4 w-4" />
+              </Button>
             )}
-          </DetailHeaderActionsMenuController>
+          </ConnectedDetailHeaderActionsMenuController>
           {/* Mobile: collapse the action-button cluster into a `⋯` overflow of
               full-width labeled rows, next to the `⋮` utility menu. */}
           {isMobile && (
@@ -177,70 +144,27 @@ export const TraceDetailViewHeader = memo(function TraceDetailViewHeader({
                 forceMount
                 className="flex w-auto min-w-44 flex-col gap-0.5 p-1 data-[state=closed]:hidden"
               >
-                <NewDatasetItemFromExistingObjectDialogController
+                <ConnectedTraceObservationAddToDropdownMenuController
                   projectId={projectId}
+                  traceId={trace.id}
+                  variant="trace"
+                  input={trace.input}
+                  output={trace.output}
+                  metadata={trace.metadata}
                 >
-                  {({ openDialog }) => (
-                    <ExistingDatasetItemsDropdownMenuController
-                      projectId={projectId}
-                      datasetItems={existingDatasetItems}
-                      disabled={!hasDatasetAccess}
-                      onOpenDialog={() =>
-                        openDialog({
-                          traceId: trace.id,
-                          input: trace.input,
-                          output: trace.output,
-                          metadata: trace.metadata,
-                        })
-                      }
+                  {({ getTriggerProps }) => (
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="w-full justify-start gap-2 font-normal"
+                      {...getTriggerProps()}
                     >
-                      {({ Anchor, openDropdown }) => (
-                        <Anchor>
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            disabled={!hasDatasetAccess}
-                            className="w-full justify-start gap-2 font-normal"
-                            onClick={() => {
-                              if (hasExistingDatasetItems) {
-                                openDropdown();
-                                return;
-                              }
-
-                              captureNewDatasetItemFormOpen();
-                              openDialog({
-                                traceId: trace.id,
-                                input: trace.input,
-                                output: trace.output,
-                                metadata: trace.metadata,
-                              });
-                            }}
-                          >
-                            {hasExistingDatasetItems || hasDatasetAccess ? (
-                              <PlusIcon
-                                className="h-4 w-4"
-                                aria-hidden="true"
-                              />
-                            ) : null}
-                            <span className="text-sm">
-                              {hasExistingDatasetItems
-                                ? `In ${datasetCount} dataset(s)`
-                                : "Add to datasets"}
-                            </span>
-                            {hasExistingDatasetItems ? (
-                              <ChevronDown className="ml-auto h-3 w-3" />
-                            ) : !hasDatasetAccess ? (
-                              <LockIcon
-                                className="ml-auto h-3 w-3"
-                                aria-hidden="true"
-                              />
-                            ) : null}
-                          </Button>
-                        </Anchor>
-                      )}
-                    </ExistingDatasetItemsDropdownMenuController>
+                      <PlusIcon className="h-4 w-4" />
+                      <span>Add to</span>
+                      <ChevronDown className="ml-auto h-3 w-3" />
+                    </Button>
                   )}
-                </NewDatasetItemFromExistingObjectDialogController>
+                </ConnectedTraceObservationAddToDropdownMenuController>
                 {!isAnnotationMode && (
                   <>
                     <AnnotateDrawerController projectId={projectId}>
@@ -273,33 +197,10 @@ export const TraceDetailViewHeader = memo(function TraceDetailViewHeader({
                           ) : (
                             <SquarePen className="h-4 w-4" />
                           )}
-                          <span className="text-sm">Annotate</span>
+                          <span className="text-sm">Score</span>
                         </Button>
                       )}
                     </AnnotateDrawerController>
-                    <AnnotationQueueItemDropdownMenuController
-                      projectId={projectId}
-                      objectId={trace.id}
-                      objectType={AnnotationQueueObjectType.TRACE}
-                    >
-                      {({ disabled, totalCount }) => (
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          disabled={disabled !== undefined}
-                          className="w-full justify-start gap-2 font-normal"
-                        >
-                          <ListPlus className="h-4 w-4" />
-                          <span className="text-sm">Add to queue</span>
-                          {totalCount > 0 && (
-                            <AnnotationQueueItemCountBadge
-                              totalCount={totalCount}
-                              layout="menu"
-                            />
-                          )}
-                        </Button>
-                      )}
-                    </AnnotationQueueItemDropdownMenuController>
                   </>
                 )}
                 <Button
@@ -315,7 +216,7 @@ export const TraceDetailViewHeader = memo(function TraceDetailViewHeader({
                   ) : (
                     <MessageSquare className="h-4 w-4" />
                   )}
-                  <span className="text-sm">Add comment</span>
+                  <span className="text-sm">Comment</span>
                   {!commentDrawerControl.disabled && commentCount ? (
                     <ActionButtonCountBadge count={commentCount} />
                   ) : null}
@@ -327,130 +228,62 @@ export const TraceDetailViewHeader = memo(function TraceDetailViewHeader({
         {/* Action buttons (desktop inline cluster) */}
         {!isMobile && (
           <div className="flex h-full flex-wrap content-start items-start justify-start gap-0.5 @2xl:mr-1 @2xl:justify-end">
-            <NewDatasetItemFromExistingObjectDialogController
+            <ConnectedTraceObservationAddToDropdownMenuController
               projectId={projectId}
-              key={trace.id}
+              traceId={trace.id}
+              variant="trace"
+              input={trace.input}
+              output={trace.output}
+              metadata={trace.metadata}
             >
-              {({ openDialog }) => (
-                <ExistingDatasetItemsDropdownMenuController
-                  projectId={projectId}
-                  datasetItems={existingDatasetItems}
-                  disabled={!hasDatasetAccess}
-                  onOpenDialog={() =>
-                    openDialog({
-                      traceId: trace.id,
-                      input: trace.input,
-                      output: trace.output,
-                      metadata: trace.metadata,
-                    })
-                  }
+              {({ getTriggerProps }) => (
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  className="gap-1"
+                  {...getTriggerProps()}
                 >
-                  {({ Anchor, openDropdown }) => (
-                    <Anchor>
-                      <Button
-                        variant="secondary"
-                        size="sm"
-                        disabled={!hasDatasetAccess}
-                        onClick={() => {
-                          if (hasExistingDatasetItems) {
-                            openDropdown();
-                            return;
-                          }
-
-                          captureNewDatasetItemFormOpen();
-                          openDialog({
-                            traceId: trace.id,
-                            input: trace.input,
-                            output: trace.output,
-                            metadata: trace.metadata,
-                          });
-                        }}
-                      >
-                        {!hasExistingDatasetItems && hasDatasetAccess ? (
-                          <PlusIcon
-                            className="mr-1.5 -ml-0.5 h-3.5 w-3.5"
-                            aria-hidden="true"
-                          />
-                        ) : null}
-                        {hasExistingDatasetItems
-                          ? `In ${datasetCount} dataset(s)`
-                          : "Add to datasets"}
-                        {hasExistingDatasetItems ? (
-                          <ChevronDown className="ml-2 h-3 w-3" />
-                        ) : !hasDatasetAccess ? (
-                          <LockIcon
-                            className="ml-1.5 h-3 w-3"
-                            aria-hidden="true"
-                          />
-                        ) : null}
-                      </Button>
-                    </Anchor>
-                  )}
-                </ExistingDatasetItemsDropdownMenuController>
+                  <PlusIcon className="h-3.5 w-3.5" />
+                  <span>Add to</span>
+                  <ChevronDown className="h-3 w-3" />
+                </Button>
               )}
-            </NewDatasetItemFromExistingObjectDialogController>
+            </ConnectedTraceObservationAddToDropdownMenuController>
             {/* Hide annotation buttons in annotation mode (panel shown separately) */}
             {!isAnnotationMode && (
-              <div className="flex items-start">
-                <AnnotateDrawerController projectId={projectId}>
-                  {({ disabled, openDrawer }) => (
-                    <Button
-                      variant="secondary"
-                      size="sm"
-                      disabled={disabled}
-                      className="rounded-r-none"
-                      onClick={() =>
-                        openDrawer({
-                          scoreTarget: {
-                            type: "trace",
-                            traceId: trace.id,
-                          },
-                          scores: traceScores,
-                          analyticsData: {
-                            type: "trace",
-                            source: "TraceDetail",
-                          },
-                          scoreMetadata: {
-                            projectId,
-                            environment: trace.environment,
-                          },
-                        })
-                      }
-                    >
-                      {disabled ? (
-                        <LockIcon className="mr-1.5 h-3 w-3" />
-                      ) : (
-                        <SquarePen className="mr-1.5 h-3.5 w-3.5" />
-                      )}
-                      <span>Annotate</span>
-                    </Button>
-                  )}
-                </AnnotateDrawerController>
-                <AnnotationQueueItemDropdownMenuController
-                  projectId={projectId}
-                  objectId={trace.id}
-                  objectType={AnnotationQueueObjectType.TRACE}
-                >
-                  {({ disabled, totalCount }) => (
-                    <Button
-                      variant="secondary"
-                      size="sm"
-                      disabled={disabled !== undefined}
-                      className="rounded-l-none rounded-r-md border-l-2"
-                    >
-                      <span className="relative mr-1 text-xs">
-                        <ChevronDown className="h-3 w-3" />
-                        {totalCount > 0 && (
-                          <AnnotationQueueItemCountBadge
-                            totalCount={totalCount}
-                            layout="toolbar"
-                          />
-                        )}
-                      </span>
-                    </Button>
-                  )}
-                </AnnotationQueueItemDropdownMenuController>
-              </div>
+              <AnnotateDrawerController projectId={projectId}>
+                {({ disabled, openDrawer }) => (
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    disabled={disabled}
+                    onClick={() =>
+                      openDrawer({
+                        scoreTarget: {
+                          type: "trace",
+                          traceId: trace.id,
+                        },
+                        scores: traceScores,
+                        analyticsData: {
+                          type: "trace",
+                          source: "TraceDetail",
+                        },
+                        scoreMetadata: {
+                          projectId,
+                          environment: trace.environment,
+                        },
+                      })
+                    }
+                  >
+                    {disabled ? (
+                      <LockIcon className="mr-1.5 h-3 w-3" />
+                    ) : (
+                      <SquarePen className="mr-1.5 h-3.5 w-3.5" />
+                    )}
+                    <span>Score</span>
+                  </Button>
+                )}
+              </AnnotateDrawerController>
             )}
             <Button
               type="button"
@@ -465,7 +298,7 @@ export const TraceDetailViewHeader = memo(function TraceDetailViewHeader({
               ) : (
                 <>
                   <MessageSquare className="h-3.5 w-3.5" />
-                  <span>Add comment</span>
+                  <span>Comment</span>
                   {!!commentCount ? (
                     <ActionButtonCountBadge count={commentCount} />
                   ) : null}
@@ -488,32 +321,17 @@ export const TraceDetailViewHeader = memo(function TraceDetailViewHeader({
         {/* Other badges */}
         {!isAnnotationMode && (
           <CollapsibleBadgeRow>
-            <LatencyBadge latencySeconds={trace.latency ?? null} />
-            <SessionBadge sessionId={trace.sessionId} projectId={projectId} />
-            <UserIdBadge userId={trace.userId} projectId={projectId} />
-            <TargetTraceBadge
-              targetTraceId={targetTraceId}
-              projectId={projectId}
-            />
-            <EnvironmentBadge environment={trace.environment} />
-            <ReleaseBadge release={trace.release} />
-            <VersionBadge version={trace.version} />
-            {aggregatedMetrics.totalCost != null &&
-              aggregatedMetrics.costDetails && (
-                <CostBadge
-                  totalCost={aggregatedMetrics.totalCost}
-                  costDetails={aggregatedMetrics.costDetails}
-                />
-              )}
-            {aggregatedMetrics.hasGenerationLike &&
-              aggregatedMetrics.usageDetails && (
-                <UsageBadge
-                  inputUsage={aggregatedMetrics.inputUsage}
-                  outputUsage={aggregatedMetrics.outputUsage}
-                  totalUsage={aggregatedMetrics.totalUsage}
-                  usageDetails={aggregatedMetrics.usageDetails}
-                />
-              )}
+            {targetTraceId && (
+              <TargetTraceBadge
+                targetTraceId={targetTraceId}
+                projectId={projectId}
+              />
+            )}
+            {trace.environment && (
+              <EnvironmentBadge environment={trace.environment} />
+            )}
+            {trace.release && <ReleaseBadge release={trace.release} />}
+            {trace.version && <VersionBadge version={trace.version} />}
           </CollapsibleBadgeRow>
         )}
       </div>

@@ -1,4 +1,5 @@
-import { useRef, useState } from "react";
+/* eslint-disable no-nested-ternary */
+import { useEffect, useEffectEvent, useRef, useState } from "react";
 import { type FilterState } from "@langfuse/shared";
 
 import {
@@ -88,12 +89,6 @@ export function ConnectedModernSessionBodyTimeline({
   const baseFilters: FilterState = [
     ...filterState,
     {
-      column: "sessionId",
-      type: "string",
-      operator: "=",
-      value: sessionId,
-    },
-    {
       column: "startTime",
       type: "datetime",
       operator: ">=",
@@ -163,9 +158,10 @@ export function ConnectedModernSessionBodyTimeline({
 
   const observationQueries = api.useQueries((t) =>
     queryDescriptors.map((descriptor) =>
-      t.events.all(
+      t.events.sessionAll(
         {
           projectId,
+          sessionId,
           filter: descriptor.traceIds
             ? [
                 ...baseFilters,
@@ -197,7 +193,7 @@ export function ConnectedModernSessionBodyTimeline({
   >();
   const timelineObservationsByTraceId = new Map<
     string,
-    RouterOutputs["events"]["all"]["observations"]
+    RouterOutputs["events"]["sessionAll"]["observations"]
   >();
   const observationIdsByTraceId = new Map<string, Set<string>>();
   const traceIdsWithMatchingTraceLevelIO = new Set<string>();
@@ -241,6 +237,7 @@ export function ConnectedModernSessionBodyTimeline({
   }
 
   const sidebarTraces: ModernSessionSidebarTrace[] = [];
+  const incompleteTimelineTraceIds = new Set<string>();
   for (const [index, trace] of traces.entries()) {
     const chunkIndex = Math.floor(index / SIDEBAR_TRACE_CHUNK_SIZE);
     const chunkKey = `browse:${filterMeasurementKey}:${chunkIndex}`;
@@ -267,6 +264,7 @@ export function ConnectedModernSessionBodyTimeline({
     const mayHaveMoreObservations = Boolean(
       lastRelevantQuery?.isPending || lastRelevantQuery?.data?.hasMore,
     );
+    if (mayHaveMoreObservations) incompleteTimelineTraceIds.add(trace.id);
     const observations =
       isPending && !hasLoadedObservations
         ? undefined
@@ -324,6 +322,12 @@ export function ConnectedModernSessionBodyTimeline({
       return next;
     });
   };
+  const autoLoadMoreObservations = useEffectEvent(loadMoreObservations);
+
+  useEffect(() => {
+    if (!hasMoreObservations || isLoadingMoreObservations) return;
+    autoLoadMoreObservations();
+  }, [hasMoreObservations, isLoadingMoreObservations]);
 
   const handleVisibleTraceIdsChange = (nextTraceIds: string[]) => {
     const highestVisibleTraceIndex = nextTraceIds.reduce(
@@ -373,7 +377,8 @@ export function ConnectedModernSessionBodyTimeline({
       const observations =
         sidebarTrace?.observations === null
           ? null
-          : sidebarTrace?.observations === undefined
+          : sidebarTrace?.observations === undefined ||
+              incompleteTimelineTraceIds.has(trace.id)
             ? undefined
             : (timelineObservationsByTraceId.get(trace.id) ?? []);
 
@@ -438,6 +443,7 @@ export function ConnectedModernSessionBodyTimeline({
           openPeek={openPeek}
           controller={timelineController}
           scrollTarget={scrollTarget}
+          onClearFilters={sidebarFilterControls.onClearFilters}
           onFilterObservationByName={onFilterObservationByName}
           onLoadMoreObservations={
             hasMoreObservations && !isLoadingMoreObservations

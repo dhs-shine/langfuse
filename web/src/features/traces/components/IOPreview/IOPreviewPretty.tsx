@@ -1,9 +1,10 @@
+/* eslint-disable no-nested-ternary */
 import { useEffect, useMemo, useRef } from "react";
 import { type Prisma, type ScoreDomain, deepParseJson } from "@langfuse/shared";
 import { PrettyJsonView } from "@/src/components/ui/PrettyJsonView";
 import { type MetadataFilterActions } from "@/src/components/table/ValueCell";
 import { useMarkdownRenderCharacterLimit } from "@/src/hooks/useMarkdownRenderCharacterLimit";
-import { type MediaReturnType } from "@/src/features/media/validation";
+import { type MediaReturnType } from "@/src/features/media";
 import { type ChatMLParserResult } from "../../hooks/useChatMLParser";
 import {
   type IOPreviewParserComparisonOutcome,
@@ -58,7 +59,7 @@ function JsonInputOutputView({
   const showOutput = !hideOutput && !(hideIfNull && !parsedOutput);
 
   return (
-    <div className="[&_.io-message-content]:px-2 [&_.io-message-header]:px-2">
+    <div className="space-y-2 [&_.io-message-content]:px-2 [&_.io-message-header]:px-2">
       {showInput && (
         <PrettyJsonView
           title="Input"
@@ -313,7 +314,7 @@ export function IOPreviewPretty({
   const shouldRenderMessages = hasRenderableChatMessages(parserResult);
 
   return (
-    <div>
+    <div className="space-y-2 pt-1">
       {showData && status ? (
         <StatusMessageSection status={status} currentView="pretty" />
       ) : null}
@@ -352,7 +353,7 @@ export function IOPreviewPretty({
           )}
         </div>
       ) : showData ? (
-        <>
+        <div>
           <JsonInputOutputView {...jsonViewProps} />
           <div className="[&_.io-message-content]:px-2 [&_.io-message-header]:px-2">
             {showCorrections && (
@@ -366,7 +367,7 @@ export function IOPreviewPretty({
               />
             )}
           </div>
-        </>
+        </div>
       ) : null}
 
       {/* Metadata Section */}

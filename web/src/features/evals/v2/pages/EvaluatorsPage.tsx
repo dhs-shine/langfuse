@@ -1,3 +1,4 @@
+/* eslint-disable no-nested-ternary */
 import { showSuccessToast } from "@/src/features/notifications";
 import { formatDistanceToNowStrict } from "date-fns";
 import {
@@ -7,7 +8,7 @@ import {
 } from "@langfuse/shared";
 import { Plus, Trash2 } from "lucide-react";
 import { useRouter } from "next/router";
-import { type ComponentProps, useMemo, useState } from "react";
+import { type ComponentProps, useMemo, useRef, useState } from "react";
 import { StringParam, useQueryParam, withDefault } from "use-query-params";
 import { useStore } from "zustand";
 import Page from "@/src/components/layouts/page";
@@ -39,9 +40,12 @@ import {
 } from "@/src/features/column-visibility";
 import { useHasProjectAccess } from "@/src/features/rbac";
 import { useEvaluatorAlerts } from "@/src/features/evals/v2/hooks/useEvaluatorAlerts";
-import { TableSelectionManager } from "@/src/features/table/components/TableSelectionManager";
+import { TableSelectionManager } from "@/src/features/table";
 import { usePaginationState } from "@/src/hooks/usePaginationState";
 import { useSidebarFilterState } from "@/src/features/filters";
+import { TableSearchBar, toObservedOptions } from "@/src/features/search-bar";
+
+import { EVALUATORS_LIST_FIELD_REGISTRY } from "../constants/tableSearchRegistry";
 import { useTableViewManager } from "@/src/components/table/table-view-presets/hooks/useTableViewManager";
 import {
   createEvaluatorsTableStore,
@@ -54,10 +58,7 @@ import {
   evaluatorExecutionsUrl,
   evaluatorScoresUrl,
 } from "../fns/evaluators/evaluatorScoresUrl";
-import {
-  EVALS_V2_TABS,
-  getEvalsV2Tabs,
-} from "@/src/features/navigation/utils/evals-v2-tabs";
+import { EVALS_V2_TABS, getEvalsV2Tabs } from "@/src/features/navigation";
 import { DefaultModelChangeConfirmationDialog } from "../components/Evaluators/ProjectDefaultModel/DefaultModelChangeConfirmationDialog";
 import { useProjectDefaultModel } from "@/src/features/evals/v2/hooks/useProjectDefaultModel";
 import {
@@ -73,7 +74,7 @@ import {
 import type { GalleryTemplate } from "../types/templateGallery";
 import { V4MigrationUpdateRequiredBadge } from "@/src/features/v4-migration/V4MigrationDelayBadge";
 import { createNumberTableColumn } from "@/src/components/design-system/table/columns/createNumberTableColumn";
-import { useOrderByState } from "@/src/features/orderBy/hooks/useOrderByState";
+import { useOrderByState } from "@/src/features/orderBy";
 import { createUserTableColumn } from "@/src/components/design-system/table/columns/createUserTableColumn";
 import { EvaluatorAlertButton } from "@/src/features/evals/v2/components/Evaluators/EvaluatorAlertButton/EvaluatorAlertButton";
 
@@ -233,11 +234,22 @@ export default function EvaluatorsPage() {
     }),
     [projectDefaultModel.defaultModel?.model],
   );
+  const viewControllersRef = useRef<Pick<
+    ReturnType<typeof useTableViewManager>,
+    "handleUserStateChange"
+  > | null>(null);
   const queryFilter = useSidebarFilterState(filterConfig, filterOptions, {
     loading: filterOptionsQuery.isPending,
     stateLocation: "urlAndSessionStorage",
     sessionFilterContextId: projectId,
-    onExplicitFilterStateChange: () => {
+    onExplicitFilterStateChange: (change) => {
+      if (change.origin === "user") {
+        viewControllersRef.current?.handleUserStateChange(
+          change.previousFilters,
+          change.nextFilters,
+          { force: change.action === "clear" },
+        );
+      }
       setPagination({ page: 1, limit: pagination.limit });
       selectionStore.getState().actions.clearSelection();
     },
@@ -429,7 +441,6 @@ export default function EvaluatorsPage() {
         header: "Total cost (7d)",
         size: 140,
         enableHiding: true,
-        emptyValue: "—",
         formatter: (value) => usdFormatter(value, 2, 4),
         getValue: (value) => {
           if (costs.isPending && hasExecutionReadAccess) {
@@ -575,6 +586,31 @@ export default function EvaluatorsPage() {
     currentFilterState: queryFilter.explicitFilterState,
     currentExpandedFilters: queryFilter.expanded,
   });
+  viewControllersRef.current = viewControllers;
+
+  const handleSearchChange = (query: string | null) => {
+    viewControllers.handleUserStateChange(searchQuery ?? "", query ?? "");
+    setSearchQuery(query);
+    setPagination({ page: 1, limit: pagination.limit });
+    selectionStore.getState().actions.clearSelection();
+  };
+  const handleOrderByChange = (next: OrderByState) => {
+    viewControllers.handleUserStateChange(orderBy, next);
+    setEvaluatorOrderBy(next);
+  };
+  const handleColumnOrderChange: typeof setColumnOrder = (updater) => {
+    const next = typeof updater === "function" ? updater(columnOrder) : updater;
+    viewControllers.handleUserStateChange(columnOrder, next);
+    setColumnOrder(next);
+  };
+  const handleColumnVisibilityChange: typeof setColumnVisibility = (
+    updater,
+  ) => {
+    const next =
+      typeof updater === "function" ? updater(columnVisibility) : updater;
+    viewControllers.handleUserStateChange(columnVisibility, next);
+    setColumnVisibility(next);
+  };
 
   return (
     <Page
@@ -660,6 +696,23 @@ export default function EvaluatorsPage() {
       ) : (
         <DataTableControlsProvider tableName={filterConfig.tableName}>
           <div className="flex h-full min-h-0 w-full flex-1 flex-col overflow-hidden">
+            <TableSearchBar
+              key={`${viewControllers.filterEditorResetKey}:${queryFilter.draftResetKey}`}
+              projectId={projectId}
+              tableName={filterConfig.tableName}
+              registry={EVALUATORS_LIST_FIELD_REGISTRY}
+              filterState={queryFilter.searchBarFilterState}
+              setFilterState={queryFilter.setFilterState}
+              observed={toObservedOptions(
+                filterOptions,
+                filterOptionsQuery.isPending,
+              )}
+              search={{
+                query: searchQuery ?? null,
+                setQuery: handleSearchChange,
+              }}
+              isV4={false}
+            />
             <EvaluatorsTableToolbar
               selectionStore={selectionStore}
               pageRowIds={evaluatorIds}
@@ -668,33 +721,23 @@ export default function EvaluatorsPage() {
               totalCount={evaluators.data?.totalItems ?? null}
               columns={columns}
               columnVisibility={columnVisibility}
-              setColumnVisibility={setColumnVisibility}
+              setColumnVisibility={handleColumnVisibilityChange}
               columnOrder={columnOrder}
-              setColumnOrder={setColumnOrder}
+              setColumnOrder={handleColumnOrderChange}
               rowHeight={rowHeight}
               setRowHeight={setRowHeight}
               filterState={filterState}
               orderByState={orderBy}
-              currentSearchQuery={searchQuery ?? undefined}
+              currentSearchQuery={searchQuery ?? ""}
               viewConfig={{
                 tableName: TableViewPresetTableName.Evaluators,
                 projectId,
                 controllers: viewControllers,
               }}
-              searchConfig={{
-                metadataSearchFields: ["Name"],
-                updateQuery: (query) => {
-                  setSearchQuery(query || null);
-                  setPagination({ page: 1, limit: pagination.limit });
-                  selectionStore.getState().actions.clearSelection();
-                },
-                currentQuery: searchQuery ?? undefined,
-                tableAllowsFullTextSearch: false,
-              }}
             />
             <ResizableFilterLayout>
               <DataTableControls
-                key={viewControllers.selectedViewId ?? "no-view"}
+                key={`${viewControllers.filterEditorResetKey}:${queryFilter.draftResetKey}`}
                 queryFilter={queryFilter}
               />
               <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
@@ -738,12 +781,12 @@ export default function EvaluatorsPage() {
                   }}
                   selectionStore={selectionStore}
                   columnVisibility={columnVisibility}
-                  onColumnVisibilityChange={setColumnVisibility}
+                  onColumnVisibilityChange={handleColumnVisibilityChange}
                   columnOrder={columnOrder}
-                  onColumnOrderChange={setColumnOrder}
+                  onColumnOrderChange={handleColumnOrderChange}
                   rowHeight={rowHeight}
                   orderBy={orderBy}
-                  setOrderBy={setEvaluatorOrderBy}
+                  setOrderBy={handleOrderByChange}
                   onRowClick={(row) =>
                     router.push(`/project/${projectId}/evals/${row.id}`)
                   }

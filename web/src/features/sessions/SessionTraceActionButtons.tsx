@@ -1,15 +1,20 @@
+/* eslint-disable no-nested-ternary */
 /* eslint-disable @repo/no-style-props */
 import { api, type RouterOutputs } from "@/src/utils/api";
 import { getNumberFromMap } from "@/src/utils/map-utils";
 import { ActionButtonCountBadge } from "@/src/components/ui/action-button-count-badge";
 import { Button } from "@/src/components/ui/button";
-import { AnnotateDrawerController } from "@/src/features/scores/components/AnnotateDrawerController";
-import { CommentDrawerController } from "@/src/features/comments/CommentDrawerController";
-import { ExistingDatasetItemsDropdownMenuController } from "@/src/features/datasets/components/ExistingDatasetItemsDropdownMenuController";
-import { NewDatasetItemFromExistingObjectDialogController } from "@/src/features/datasets/components/NewDatasetItemFromExistingObjectDialogController";
-import { useDatasetItemFromTraceOrObservation } from "@/src/features/datasets/hooks/useDatasetItemFromTraceOrObservation";
-import { AnnotationQueueItemDropdownMenuController } from "@/src/features/annotation-queues/components/AnnotationQueueItemDropdownMenuController";
-import { AnnotationQueueItemCountBadge } from "@/src/features/annotation-queues/components/AnnotationQueueItemCountBadge";
+import { AnnotateDrawerController } from "@/src/features/scores";
+import { CommentDrawerController } from "@/src/features/comments";
+import {
+  ExistingDatasetItemsDropdownMenuController,
+  NewDatasetItemFromExistingObjectDialogController,
+  useDatasetItemFromTraceOrObservation,
+} from "@/src/features/datasets";
+import {
+  AnnotationQueueItemDropdownMenuController,
+  AnnotationQueueItemCountBadge,
+} from "@/src/features/annotation-queues";
 import { cn } from "@/src/utils/tailwind";
 import {
   ChevronDown,
@@ -170,39 +175,42 @@ export function SessionTraceActionButtons({
           objectId={traceId}
           objectType="TRACE"
         >
-          {({ disabled, totalCount }) => (
-            <Button
-              variant="outline"
-              size={size}
-              disabled={disabled !== undefined}
-              className="rounded-l-none rounded-r-md border-l-2"
-            >
-              <span className="relative mr-1 text-xs">
-                <ChevronDown className="h-3 w-3" />
-                {totalCount > 0 && (
-                  <AnnotationQueueItemCountBadge
-                    totalCount={totalCount}
-                    layout="toolbar"
-                  />
-                )}
-              </span>
-            </Button>
+          {({ disabled, totalCount, Trigger }) => (
+            <Trigger asChild>
+              <Button
+                variant="outline"
+                size={size}
+                disabled={disabled !== undefined}
+                className="rounded-l-none rounded-r-md border-l-2"
+              >
+                <span className="relative mr-1 text-xs">
+                  <ChevronDown className="h-3 w-3" />
+                  {totalCount > 0 && (
+                    <AnnotationQueueItemCountBadge
+                      totalCount={totalCount}
+                      layout="toolbar"
+                    />
+                  )}
+                </span>
+              </Button>
+            </Trigger>
           )}
         </AnnotationQueueItemDropdownMenuController>
       </div>
-      <CommentDrawerController
-        projectId={projectId}
-        objectId={traceId}
-        objectType="TRACE"
-        count={commentCount}
-      >
+      <CommentDrawerController projectId={projectId} count={commentCount}>
         {({ disabled, openDrawer }) => (
           <Button
             type="button"
             variant="outline"
             size={size}
             disabled={disabled}
-            onClick={() => openDrawer({ type: "comments" })}
+            onClick={() =>
+              openDrawer({
+                type: "comments",
+                objectId: traceId,
+                objectType: "TRACE",
+              })
+            }
             className="gap-1"
           >
             {disabled ? (

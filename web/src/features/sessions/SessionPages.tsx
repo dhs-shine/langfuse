@@ -1,13 +1,16 @@
+/* eslint-disable no-nested-ternary */
 /* eslint-disable @repo/no-style-props, @repo/no-null-render */
 import { cn } from "@/src/utils/tailwind";
 import { GroupedScoreBadges } from "@/src/components/grouped-score-badge";
 import { ErrorPage } from "@/src/components/error-page";
 import { PublishSessionSwitch } from "@/src/components/publish-object-switch";
-import { IOPreview } from "@/src/features/traces/components/IOPreview/IOPreview";
+import { IOPreview } from "@/src/features/traces";
 import { JsonSkeleton } from "@/src/components/ui/CodeJsonViewer";
 import { Badge } from "@/src/components/ui/badge";
-import { DetailPageNav } from "@/src/features/navigate-detail-pages/DetailPageNav";
-import { useDetailPageLists } from "@/src/features/navigate-detail-pages/context";
+import {
+  DetailPageNav,
+  useDetailPageLists,
+} from "@/src/features/navigate-detail-pages";
 import { api } from "@/src/utils/api";
 import { usdFormatter } from "@/src/utils/numbers";
 import { getNumberFromMap } from "@/src/utils/map-utils";
@@ -15,10 +18,13 @@ import Link from "next/link";
 import { useRouter } from "next/router";
 import React, { useEffect, useState, useCallback, useRef } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { AnnotateDrawerController } from "@/src/features/scores/components/AnnotateDrawerController";
+import { AnnotateDrawerController } from "@/src/features/scores";
 import { ActionButtonCountBadge } from "@/src/components/ui/action-button-count-badge";
 import { Button } from "@/src/components/ui/button";
-import { CommentDrawerController } from "@/src/features/comments/CommentDrawerController";
+import {
+  CommentDrawerController,
+  getCommentDrawerInitialStateFromUrl,
+} from "@/src/features/comments";
 import { useSession } from "next-auth/react";
 import {
   CheckIcon,
@@ -35,7 +41,7 @@ import {
   SquarePen,
 } from "lucide-react";
 import { useCopyToClipboard } from "@/src/hooks/useCopyToClipboard";
-import { usePostHogClientCapture } from "@/src/features/posthog-analytics/usePostHogClientCapture";
+import { usePostHogClientCapture } from "@/src/features/posthog-analytics";
 import Page from "@/src/components/layouts/page";
 import {
   Popover,
@@ -51,12 +57,14 @@ import {
   TableViewPresetTableName,
   normalizeLegacySessionPositionInTraceFilters,
 } from "@langfuse/shared";
-import { AnnotationQueueItemDropdownMenuController } from "@/src/features/annotation-queues/components/AnnotationQueueItemDropdownMenuController";
-import { AnnotationQueueItemCountBadge } from "@/src/features/annotation-queues/components/AnnotationQueueItemCountBadge";
+import {
+  AnnotationQueueItemDropdownMenuController,
+  AnnotationQueueItemCountBadge,
+} from "@/src/features/annotation-queues";
 import {
   useWebCalloutAction,
   WebCalloutButton,
-} from "@/src/features/web-callouts/components/WebCalloutMenuItem";
+} from "@/src/features/web-callouts";
 import { TablePeekViewTraceDetail } from "@/src/components/table/peek/peek-trace-detail";
 import { usePeekNavigation } from "@/src/components/table/peek/hooks/usePeekNavigation";
 import { type WithStringifiedMetadata } from "@/src/utils/clientSideDomainTypes";
@@ -65,19 +73,22 @@ import { useParsedTrace } from "@/src/hooks/useParsedTrace";
 import useLocalStorage from "@/src/components/useLocalStorage";
 import { Switch } from "@/src/components/design-system/Switch/Switch";
 import { LazySessionTraceEventsRow } from "@/src/features/sessions/LazySessionTraceEventsRow";
-import { observationEventsFilterConfig } from "@/src/features/events/config/filter-config";
-import { useEventsFilterOptions } from "@/src/features/events/hooks/useEventsFilterOptions";
+import {
+  observationEventsFilterConfig,
+  useEventsFilterOptions,
+} from "@/src/features/events";
 import {
   decodeAndNormalizeFilters,
   useSidebarFilterState,
-} from "@/src/features/filters/hooks/useSidebarFilterState";
-import {
   buildSidebarFilterQueryStorageKey,
   readPersistedSidebarFilterQuery,
-} from "@/src/features/filters/lib/persistedSidebarFilterQuery";
+  PopoverFilterBuilder,
+} from "@/src/features/filters";
+
 import { StringParam, useQueryParam } from "use-query-params";
-import { PopoverFilterBuilder } from "@/src/features/filters/components/filter-builder";
+
 import { useTableViewManager } from "@/src/components/table/table-view-presets/hooks/useTableViewManager";
+import { useTableViewFilterChange } from "@/src/components/table/table-view-presets/hooks/useTableViewFilterChange";
 import { TableViewPresetsDrawer } from "@/src/components/table/table-view-presets/components/data-table-view-presets-drawer";
 import { Separator } from "@/src/components/ui/separator";
 import {
@@ -98,7 +109,7 @@ import { createSessionDetailStore } from "@/src/features/sessions/sessionDetailS
 import { ModernSession } from "@/src/features/sessions/ModernSession";
 import { DropdownMenuTrigger } from "@/src/components/ui/dropdown-menu";
 import { ModernSessionHeaderActionsController } from "@/src/features/sessions/ModernSessionHeaderActionsController";
-import useIsFeatureEnabled from "@/src/features/feature-flags/hooks/useIsFeatureEnabled";
+import { useIsFeatureEnabled } from "@/src/features/feature-flags";
 import { useIsMobile } from "@/src/hooks/use-mobile";
 import { useStore } from "zustand";
 import { useHistoryEntryRevisit } from "@/src/features/sessions/useHistoryEntryRevisit";
@@ -565,8 +576,9 @@ export const SessionPage: React.FC<{
               <CommentDrawerController
                 key="comment"
                 projectId={projectId}
-                objectId={sessionId}
-                objectType="SESSION"
+                initialState={() =>
+                  getCommentDrawerInitialStateFromUrl(router.query)
+                }
                 count={getNumberFromMap(sessionCommentCounts.data, sessionId)}
               >
                 {({ disabled, openDrawer }) => (
@@ -574,7 +586,13 @@ export const SessionPage: React.FC<{
                     type="button"
                     variant="outline"
                     disabled={disabled}
-                    onClick={() => openDrawer({ type: "comments" })}
+                    onClick={() =>
+                      openDrawer({
+                        type: "comments",
+                        objectId: sessionId,
+                        objectType: "SESSION",
+                      })
+                    }
                     className="gap-1"
                   >
                     {disabled ? (
@@ -638,22 +656,24 @@ export const SessionPage: React.FC<{
                   objectId={sessionId}
                   objectType="SESSION"
                 >
-                  {({ disabled, totalCount }) => (
-                    <Button
-                      variant="outline"
-                      disabled={disabled !== undefined}
-                      className="rounded-l-none rounded-r-md border-l-2"
-                    >
-                      <span className="relative mr-1 text-xs">
-                        <ChevronDown className="h-3 w-3" />
-                        {totalCount > 0 && (
-                          <AnnotationQueueItemCountBadge
-                            totalCount={totalCount}
-                            layout="toolbar"
-                          />
-                        )}
-                      </span>
-                    </Button>
+                  {({ disabled, totalCount, Trigger }) => (
+                    <Trigger asChild>
+                      <Button
+                        variant="outline"
+                        disabled={disabled !== undefined}
+                        className="rounded-l-none rounded-r-md border-l-2"
+                      >
+                        <span className="relative mr-1 text-xs">
+                          <ChevronDown className="h-3 w-3" />
+                          {totalCount > 0 && (
+                            <AnnotationQueueItemCountBadge
+                              totalCount={totalCount}
+                              layout="toolbar"
+                            />
+                          )}
+                        </span>
+                      </Button>
+                    </Trigger>
                   )}
                 </AnnotationQueueItemDropdownMenuController>
               </div>
@@ -685,8 +705,6 @@ export const SessionPage: React.FC<{
               <CopySessionIdButton sessionId={sessionId} layout="menu" />
               <CommentDrawerController
                 projectId={projectId}
-                objectId={sessionId}
-                objectType="SESSION"
                 count={getNumberFromMap(sessionCommentCounts.data, sessionId)}
               >
                 {({ disabled, openDrawer }) => (
@@ -695,7 +713,13 @@ export const SessionPage: React.FC<{
                     variant="ghost"
                     size="sm"
                     disabled={disabled}
-                    onClick={() => openDrawer({ type: "comments" })}
+                    onClick={() =>
+                      openDrawer({
+                        type: "comments",
+                        objectId: sessionId,
+                        objectType: "SESSION",
+                      })
+                    }
                     className="w-full justify-start gap-2 font-normal"
                   >
                     {disabled ? (
@@ -754,22 +778,24 @@ export const SessionPage: React.FC<{
                 objectId={sessionId}
                 objectType="SESSION"
               >
-                {({ disabled, totalCount }) => (
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    disabled={disabled !== undefined}
-                    className="w-full justify-start gap-2 font-normal"
-                  >
-                    <ListPlus className="h-4 w-4" />
-                    <span className="text-sm">Add to queue</span>
-                    {totalCount > 0 && (
-                      <AnnotationQueueItemCountBadge
-                        totalCount={totalCount}
-                        layout="menu"
-                      />
-                    )}
-                  </Button>
+                {({ disabled, totalCount, Trigger }) => (
+                  <Trigger asChild>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      disabled={disabled !== undefined}
+                      className="w-full justify-start gap-2 font-normal"
+                    >
+                      <ListPlus className="h-4 w-4" />
+                      <span className="text-sm">Add to queue</span>
+                      {totalCount > 0 && (
+                        <AnnotationQueueItemCountBadge
+                          totalCount={totalCount}
+                          layout="menu"
+                        />
+                      )}
+                    </Button>
+                  </Trigger>
                 )}
               </AnnotationQueueItemDropdownMenuController>
               {webCalloutAction && (
@@ -980,6 +1006,7 @@ const LoadedSessionEventsPage: React.FC<{
     projectId,
   });
   const isSessionTimelineEnabled = useIsFeatureEnabled("sessionTimeline", {
+    enableForAdmins: false,
     projectId,
   });
   const isMobile = useIsMobile();
@@ -1283,11 +1310,18 @@ const LoadedSessionEventsPage: React.FC<{
     [filterColumns],
   );
 
+  const { viewControllersRef, onExplicitFilterStateChange } =
+    useTableViewFilterChange();
+  const hasUserFilterEditRef = useRef(false);
   const queryFilter = useSidebarFilterState(
     sessionEventsFilterConfig,
     typedFilterOptions,
     {
       loading: isFilterOptionsPending,
+      onExplicitFilterStateChange: (change) => {
+        if (change.origin === "user") hasUserFilterEditRef.current = true;
+        onExplicitFilterStateChange(change);
+      },
       stateLocation: "urlAndSessionStorage",
       sessionFilterContextId: projectId,
     },
@@ -1322,6 +1356,7 @@ const LoadedSessionEventsPage: React.FC<{
     (filters: FilterState) =>
       queryFilter.setFilterState(
         normalizeLegacySessionPositionInTraceFilters(filters),
+        { origin: "saved_view" },
       ),
     [queryFilter],
   );
@@ -1346,6 +1381,8 @@ const LoadedSessionEventsPage: React.FC<{
     currentExpandedFilters: queryFilter.expanded,
   });
 
+  viewControllersRef.current = viewControllers;
+
   // Auto-apply path only (the drawer's user-driven preset selection has its
   // own handler). Writes with `replaceIn`: this is the page deciding its own
   // default, not a user step — pushing would leave the pre-default URL as a
@@ -1354,7 +1391,10 @@ const LoadedSessionEventsPage: React.FC<{
   const applySystemPreset = useCallback(
     (preset: SessionDetailSystemPreset) => {
       viewControllers.handleSetViewId(preset.id, { updateType: "replaceIn" });
-      queryFilter.setFilterState(preset.filters, { updateType: "replaceIn" });
+      queryFilter.setFilterState(preset.filters, {
+        updateType: "replaceIn",
+        origin: "system",
+      });
     },
     [queryFilter, viewControllers],
   );
@@ -1384,20 +1424,11 @@ const LoadedSessionEventsPage: React.FC<{
 
   const selectedViewId = viewControllers.selectedViewId;
 
-  // Which named view drives the empty-state notice. Derived from the applied
-  // FilterState (the single source of truth) so the label survives the manager
-  // stripping the viewId on reload, and drops to null the moment the filter is
-  // edited. Mirrors the drawer trigger's rule: only name a view when it also
-  // matches the selected view id — so a selected saved view, or a filter
-  // hand-edited into another preset's exact shape, doesn't make the notice and
-  // the drawer trigger disagree.
-  const filterMatchedView = findSessionDetailViewByFilters(visibleFilterState);
-  const matchedView =
-    filterMatchedView &&
-    (!selectedViewId || filterMatchedView.id === selectedViewId)
-      ? filterMatchedView
-      : null;
-  const viewLabel = matchedView?.name ?? null;
+  // A named view is selected explicitly; matching filter values alone cannot
+  // turn a user's edited working state back into a selected preset.
+  const viewLabel =
+    SESSION_DETAIL_SYSTEM_PRESETS.find((preset) => preset.id === selectedViewId)
+      ?.name ?? null;
   const hasSessionControls =
     !isModernSessionEnabled ||
     Boolean(session.users?.length || session.scores.length);
@@ -1477,6 +1508,8 @@ const LoadedSessionEventsPage: React.FC<{
   useEffect(() => {
     if (isViewLoading) return;
     if (selectedViewId) return;
+    if (viewControllers.viewUpdateTarget || hasUserFilterEditRef.current)
+      return;
     const filterMatchedView =
       findSessionDetailViewByFilters(visibleFilterState);
     if (!filterMatchedView) return;
@@ -1514,22 +1547,28 @@ const LoadedSessionEventsPage: React.FC<{
     if (defaultPresetResolvedSessionRef.current === sessionId) return;
     if (isViewLoading) return; // Wait for view manager to initialize
     defaultPresetResolvedSessionRef.current = sessionId;
+    if (viewControllers.viewUpdateTarget || hasUserFilterEditRef.current)
+      return;
     if (selectedViewId) return;
     if (initialViewIdRef.current) return;
     if (arrivedOnVisitedHistoryEntry) return;
     const presetToApply = getSessionDetailPresetToApply({
       selectedViewId: null,
       hasFilters: visibleFilterState.length > 0,
+      isTimelineEnabled: isSessionTimelineEnabled && isModernSessionEnabled,
     });
     if (!presetToApply) return;
     applySystemPreset(presetToApply);
   }, [
     applySystemPreset,
     arrivedOnVisitedHistoryEntry,
+    isModernSessionEnabled,
+    isSessionTimelineEnabled,
     isViewLoading,
     selectedViewId,
     sessionId,
     visibleFilterState,
+    viewControllers.viewUpdateTarget,
   ]);
 
   const virtualizer = useVirtualizer({
@@ -1582,8 +1621,9 @@ const LoadedSessionEventsPage: React.FC<{
               <CommentDrawerController
                 key="comment"
                 projectId={projectId}
-                objectId={sessionId}
-                objectType="SESSION"
+                initialState={() =>
+                  getCommentDrawerInitialStateFromUrl(router.query)
+                }
                 count={getNumberFromMap(sessionCommentCounts.data, sessionId)}
               >
                 {({ disabled, openDrawer }) => (
@@ -1591,7 +1631,13 @@ const LoadedSessionEventsPage: React.FC<{
                     type="button"
                     variant="outline"
                     disabled={disabled}
-                    onClick={() => openDrawer({ type: "comments" })}
+                    onClick={() =>
+                      openDrawer({
+                        type: "comments",
+                        objectId: sessionId,
+                        objectType: "SESSION",
+                      })
+                    }
                     className="gap-1"
                   >
                     {disabled ? (
@@ -1660,22 +1706,24 @@ const LoadedSessionEventsPage: React.FC<{
                   objectId={sessionId}
                   objectType="SESSION"
                 >
-                  {({ disabled, totalCount }) => (
-                    <Button
-                      variant="outline"
-                      disabled={disabled !== undefined}
-                      className="rounded-l-none rounded-r-md border-l-2"
-                    >
-                      <span className="relative mr-1 text-xs">
-                        <ChevronDown className="h-3 w-3" />
-                        {totalCount > 0 && (
-                          <AnnotationQueueItemCountBadge
-                            totalCount={totalCount}
-                            layout="toolbar"
-                          />
-                        )}
-                      </span>
-                    </Button>
+                  {({ disabled, totalCount, Trigger }) => (
+                    <Trigger asChild>
+                      <Button
+                        variant="outline"
+                        disabled={disabled !== undefined}
+                        className="rounded-l-none rounded-r-md border-l-2"
+                      >
+                        <span className="relative mr-1 text-xs">
+                          <ChevronDown className="h-3 w-3" />
+                          {totalCount > 0 && (
+                            <AnnotationQueueItemCountBadge
+                              totalCount={totalCount}
+                              layout="toolbar"
+                            />
+                          )}
+                        </span>
+                      </Button>
+                    </Trigger>
                   )}
                 </AnnotationQueueItemDropdownMenuController>
               </div>
@@ -1734,8 +1782,6 @@ const LoadedSessionEventsPage: React.FC<{
               <CopySessionIdButton sessionId={sessionId} layout="menu" />
               <CommentDrawerController
                 projectId={projectId}
-                objectId={sessionId}
-                objectType="SESSION"
                 count={getNumberFromMap(sessionCommentCounts.data, sessionId)}
               >
                 {({ disabled, openDrawer }) => (
@@ -1744,7 +1790,13 @@ const LoadedSessionEventsPage: React.FC<{
                     variant="ghost"
                     size="sm"
                     disabled={disabled}
-                    onClick={() => openDrawer({ type: "comments" })}
+                    onClick={() =>
+                      openDrawer({
+                        type: "comments",
+                        objectId: sessionId,
+                        objectType: "SESSION",
+                      })
+                    }
                     className="w-full justify-start gap-2 font-normal"
                   >
                     {disabled ? (
@@ -1808,22 +1860,24 @@ const LoadedSessionEventsPage: React.FC<{
                 objectId={sessionId}
                 objectType="SESSION"
               >
-                {({ disabled, totalCount }) => (
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    disabled={disabled !== undefined}
-                    className="w-full justify-start gap-2 font-normal"
-                  >
-                    <ListPlus className="h-4 w-4" />
-                    <span className="text-sm">Add to queue</span>
-                    {totalCount > 0 && (
-                      <AnnotationQueueItemCountBadge
-                        totalCount={totalCount}
-                        layout="menu"
-                      />
-                    )}
-                  </Button>
+                {({ disabled, totalCount, Trigger }) => (
+                  <Trigger asChild>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      disabled={disabled !== undefined}
+                      className="w-full justify-start gap-2 font-normal"
+                    >
+                      <ListPlus className="h-4 w-4" />
+                      <span className="text-sm">Add to queue</span>
+                      {totalCount > 0 && (
+                        <AnnotationQueueItemCountBadge
+                          totalCount={totalCount}
+                          layout="menu"
+                        />
+                      )}
+                    </Button>
+                  </Trigger>
                 )}
               </AnnotationQueueItemDropdownMenuController>
               {webCalloutAction && (
@@ -1905,6 +1959,7 @@ const LoadedSessionEventsPage: React.FC<{
                 so (LFE-10520). */}
               {!isModernSessionEnabled ? (
                 <PopoverFilterBuilder
+                  key={viewControllers.filterEditorResetKey}
                   columns={filterColumns}
                   filterState={visibleFilterState}
                   onChange={queryFilter.setFilterState}
@@ -2029,6 +2084,7 @@ const LoadedSessionEventsPage: React.FC<{
           tableName="session-events"
           isV4={true}
           projectId={projectId}
+          layout={isModernSessionEnabled ? "observation-focused" : "default"}
         />
       </Page>
     </SessionDetailStoreProvider>

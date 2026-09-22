@@ -25,7 +25,7 @@ import Link from "next/link";
 import { ErrorPage } from "@/src/components/error-page";
 import { usePostHogClientCapture } from "@/src/features/posthog-analytics";
 import { passwordSchema } from "@/src/features/auth";
-import { useLangfuseCloudRegion } from "@/src/features/organizations/hooks";
+import { useLangfuseCloudRegion } from "@/src/features/organizations";
 import { PASSWORD_SETUP_EMAIL_STORAGE_KEY } from "@/src/features/auth-credentials/lib/credentialsUtils";
 
 const resetPasswordSchema = z
@@ -153,7 +153,7 @@ export function ResetPasswordPage({
     );
 
   const title = isSetMode ? "Set your password" : "Reset your password";
-  const pageTitle = isSetMode ? "Set Password" : "Reset Password";
+  const pageTitle = isSetMode ? "Set password" : "Reset password";
   const submitLabel = isSetMode ? "Set password" : "Update Password";
   const successMessage = isSetMode
     ? "Password set successfully. Redirecting ..."
