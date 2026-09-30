@@ -24,6 +24,8 @@ import { cn } from "@/src/utils/tailwind";
 import { useViewPreferences } from "@/src/features/traces/contexts/ViewPreferencesContext";
 import { useSelection } from "@/src/features/traces/contexts/SelectionContext";
 import { TraceReviewLayout } from "./TraceReviewLayout";
+import { useInternalFeaturesEnabled } from "@/src/features/feature-flags";
+import { useReadPath } from "@/src/features/events";
 import { resolveEffectiveWidthFraction } from "@/src/components/table/peek/store/peekPanelStore";
 
 const RESIZABLE_PANEL_HANDLE_ID = "trace-layout-handle";
@@ -143,7 +145,6 @@ interface TraceLayoutDesktopContext {
   setIsNavigationPanelCollapsed: (collapsed: boolean) => void;
   panelRef: React.RefObject<PanelImperativeHandle | null>;
   handleTogglePanel: () => void;
-  shouldPulseToggle: boolean;
   // Detail (info/preview) panel — collapsible like the navigation panel.
   detailPanelRef: React.RefObject<PanelImperativeHandle | null>;
   isDetailPanelCollapsed: boolean;
@@ -217,10 +218,6 @@ function TraceNavigationDetailLayout({
   reviewNavigationCollapsed: boolean;
   toggleReviewNavigation: () => void;
 }) {
-  // Get current view mode from URL
-  const [viewMode] = useQueryParam("view", StringParam);
-  const isTimelineView = viewMode === "timeline";
-
   // Peek sizing depends on the drawer width; persistence scope is caller-owned.
   const { isPeekMode } = useViewPreferences();
 
@@ -488,7 +485,15 @@ function TraceNavigationDetailLayout({
   // cannot hide the trace overview on the next trace-level queue item. Re-
   // selecting the same node is handled at the row click via expandDetailPanel,
   // since the URL param — and thus this effect — doesn't change on re-click.
-  const { selectedNodeId } = useSelection();
+  const { selectedNodeId, selectedTab } = useSelection();
+  const internalFeaturesEnabled = useInternalFeaturesEnabled();
+  const { isV4 } = useReadPath();
+  const showMessages =
+    selectedTab === "messages" && internalFeaturesEnabled && isV4;
+  useEffect(() => {
+    if (!showMessages || reviewOpen) return;
+    panelRef.current?.collapse();
+  }, [showMessages, reviewOpen, panelRef]);
   useEffect(() => {
     // Guard on selectedNodeId so a deliberately-collapsed panel isn't reopened
     // on mount/refresh when there's no selection (effects always run once).
@@ -529,21 +534,6 @@ function TraceNavigationDetailLayout({
     }
   };
 
-  // Pulse animation: hint to user that panel can be collapsed when switching to timeline
-  const [shouldPulseToggle, setShouldPulseToggle] = useState(false);
-
-  useEffect(() => {
-    if (isTimelineView) {
-      setShouldPulseToggle(true);
-      const timeout = setTimeout(() => {
-        setShouldPulseToggle(false);
-      }, 12000); // Stop pulse after 12 seconds
-      return () => clearTimeout(timeout);
-    }
-    // Reset pulse when leaving timeline view
-    setShouldPulseToggle(false);
-  }, [isTimelineView]);
-
   const contextValue: TraceLayoutDesktopContext = {
     reviewOpen,
     isNavigationPanelCollapsed: reviewOpen
@@ -552,7 +542,6 @@ function TraceNavigationDetailLayout({
     setIsNavigationPanelCollapsed,
     panelRef,
     handleTogglePanel,
-    shouldPulseToggle,
     detailPanelRef,
     isDetailPanelCollapsed: reviewOpen ? false : isDetailPanelCollapsed,
     setIsDetailPanelCollapsed,

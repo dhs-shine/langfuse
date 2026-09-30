@@ -1,4 +1,3 @@
-/* eslint-disable no-nested-ternary */
 /* eslint-disable @repo/no-style-props */
 /**
  * SpanContent - Pure span/observation content renderer.
@@ -6,7 +5,7 @@
  * Responsibilities:
  * - Render span-specific data (name, metrics, badges, scores)
  * - Apply view preferences (show/hide features)
- * - Format and display metrics with color coding
+ * - Format metrics; a row that is most of the trace reads in foreground
  *
  * Does NOT know about:
  * - Tree structure (indents, lines, collapse buttons)
@@ -26,16 +25,17 @@ import { CommentCountIcon } from "@/src/features/comments/CommentCountIcon";
 import { cn } from "@/src/utils/tailwind";
 import { formatIntervalSeconds } from "@/src/utils/dates";
 import { usdFormatter, numberFormatter } from "@/src/utils/numbers";
-import { heatMapTextColor } from "@/src/features/traces/fns/heatMapTextColor";
+import {
+  isEmphasizedShare,
+  type MetricEmphasisContext,
+} from "@/src/features/traces/fns/metricEmphasis";
 import { useViewPreferences } from "@/src/features/traces/contexts/ViewPreferencesContext";
 import { useTraceData } from "@/src/features/traces/contexts/TraceDataContext";
 import { selectNodeScores } from "@/src/features/traces/fns/nodeScores";
-import type Decimal from "decimal.js";
 
 interface SpanContentProps {
   node: TreeNode;
-  parentTotalCost?: Decimal;
-  parentTotalDuration?: number;
+  emphasis?: MetricEmphasisContext;
   commentCount?: number;
   onSelect?: () => void;
   onHover?: () => void;
@@ -44,36 +44,39 @@ interface SpanContentProps {
 
 export function SpanContent({
   node,
-  parentTotalCost,
-  parentTotalDuration,
+  emphasis,
   commentCount,
   onSelect,
   onHover,
   className,
 }: SpanContentProps) {
   const { mergedScores } = useTraceData();
-  const {
-    showDuration,
-    showCostTokens,
-    showScores,
-    colorCodeMetrics,
-    showComments,
-  } = useViewPreferences();
+  const { showDuration, showCostTokens, showScores, showComments } =
+    useViewPreferences();
 
   // Own cost only; sums over children belong to the detail panel, not the row.
   const ownCost =
     node.calculatedTotalCost ??
     (node.calculatedInputCost ?? 0) + (node.calculatedOutputCost ?? 0);
 
-  const duration =
-    node.endTime && node.startTime
-      ? node.endTime.getTime() - node.startTime.getTime()
-      : node.latency
-        ? node.latency * 1000
-        : undefined;
+  const duration = (() => {
+    if (node.endTime && node.startTime) {
+      return node.endTime.getTime() - node.startTime.getTime();
+    }
+    if (node.latency) {
+      return node.latency * 1000;
+    }
+    return undefined;
+  })();
 
-  const shouldRenderDuration =
-    showDuration && Boolean(duration || node.latency);
+  const durationMs = duration || (node.latency ? node.latency * 1000 : 0);
+
+  const shouldRenderDuration = showDuration && Boolean(durationMs);
+  const emphasizeDuration = isEmphasizedShare(
+    durationMs,
+    emphasis?.traceTotalDurationMs,
+  );
+  const emphasizeCost = isEmphasizedShare(ownCost, emphasis?.traceTotalCost);
 
   // Tokens stand in for cost only when there is no cost to show.
   const tokenTotal = ownCost ? 0 : (node.totalUsage ?? 0);
@@ -128,7 +131,7 @@ export function SpanContent({
         {shouldRenderAnyMetrics && (
           <div className="flex flex-wrap gap-x-2">
             {/* Duration (own span) */}
-            {shouldRenderDuration && (duration || node.latency) ? (
+            {shouldRenderDuration ? (
               <span
                 title={
                   node.type === "TRACE"
@@ -136,19 +139,13 @@ export function SpanContent({
                     : "Own span duration"
                 }
                 className={cn(
-                  "text-foreground-tertiary text-xs",
-                  parentTotalDuration &&
-                    colorCodeMetrics &&
-                    heatMapTextColor({
-                      max: parentTotalDuration,
-                      value:
-                        duration || (node.latency ? node.latency * 1000 : 0),
-                    }),
+                  "text-xs",
+                  emphasizeDuration
+                    ? "text-foreground"
+                    : "text-foreground-tertiary",
                 )}
               >
-                {formatIntervalSeconds(
-                  (duration || (node.latency ? node.latency * 1000 : 0)) / 1000,
-                )}
+                {formatIntervalSeconds(durationMs / 1000)}
               </span>
             ) : null}
 
@@ -166,13 +163,10 @@ export function SpanContent({
             {shouldRenderCostTokens && ownCost ? (
               <span
                 className={cn(
-                  "text-foreground-tertiary text-xs",
-                  parentTotalCost &&
-                    colorCodeMetrics &&
-                    heatMapTextColor({
-                      max: parentTotalCost,
-                      value: ownCost,
-                    }),
+                  "text-xs",
+                  emphasizeCost
+                    ? "text-foreground"
+                    : "text-foreground-tertiary",
                 )}
               >
                 {usdFormatter(ownCost)}

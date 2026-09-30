@@ -160,7 +160,7 @@ const getProjectSettingsPages = ({
             {
               title: "Delete this project",
               description:
-                "Once you delete a project, there is no going back. Please be certain.",
+                "Once you delete a project, there is no going back. Deletion time scales with project size and can take multiple days for very large projects.",
               button: (
                 <DeleteProjectDialogController>
                   {({ hasAccess, openDialog }) => (
@@ -233,9 +233,9 @@ const getProjectSettingsPages = ({
     content: <ModelsSettings projectId={project.id} />,
   },
   {
-    title: "Protected Prompt Labels",
+    title: "Protected Labels",
     slug: "protected-prompt-labels",
-    cmdKKeywords: ["prompt", "label", "protect", "lock"],
+    cmdKKeywords: ["prompt", "skill", "label", "protect", "lock"],
     content: <ProtectedLabelsSettings projectId={project.id} />,
     show: showProtectedLabelsSettings,
   },

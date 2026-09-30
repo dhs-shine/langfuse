@@ -330,6 +330,9 @@ export const openAIModels = [
   "gpt-4.1-nano",
   "gpt-4.1-nano-2025-04-14",
   "gpt-6-astra",
+  "gpt-6-sol",
+  "gpt-6.1-sol",
+  "gpt-6-luna",
   "gpt-5.6-sol",
   "gpt-5.6-terra",
   "gpt-5.6-luna",
@@ -393,10 +396,12 @@ export type OpenAIModel = (typeof openAIModels)[number];
 export const anthropicModels = [
   "claude-sonnet-4-5-20250929",
   "claude-sonnet-5",
+  "claude-sonnet-5-5",
   "claude-fable-5",
   "claude-fable-5-1",
   "claude-mythos-5",
   "claude-mythos-5-1",
+  "claude-opus-5-5",
   "claude-opus-5",
   "claude-haiku-4-5-20251001",
   "claude-opus-4-8",
@@ -469,7 +474,53 @@ export const googleAIStudioModels = [
   "gemini-1.5-flash-8b",
 ] as const;
 
-export const typeSafeModels = ["jev-1.13.0", "jev-latest"] as const;
+export const typeSafeModels = ["jev-latest"] as const;
+
+/**
+ * Providers that serve Jev through TypeSafe's `/v1/systemone` API. A TypeSafe
+ * connection stores a gateway's `baseURL`, or none for TypeSafe itself, which
+ * the AI SDK provider then defaults to. Presets only prefill the base URL; a
+ * `custom` connection stores any base URL the provider appends `/systemone`
+ * to.
+ */
+export const TYPESAFE_UPSTREAMS = [
+  {
+    id: "typesafe",
+    label: "TypeSafe",
+    baseURL: null,
+    apiKeyLabel: "TypeSafe API key",
+  },
+  {
+    id: "vercel-ai-gateway",
+    label: "Vercel AI Gateway",
+    baseURL: "https://ai-gateway.vercel.sh/typesafe/v1",
+    apiKeyLabel: "Vercel AI Gateway API key",
+  },
+  {
+    id: "openrouter",
+    label: "OpenRouter",
+    baseURL: "https://openrouter.ai/api/v1",
+    apiKeyLabel: "OpenRouter API key",
+  },
+  {
+    id: "custom",
+    label: "Custom",
+    baseURL: null,
+    apiKeyLabel: "API key",
+  },
+] as const;
+
+export type TypeSafeUpstream = (typeof TYPESAFE_UPSTREAMS)[number];
+
+export function resolveTypeSafeUpstream(
+  baseURL: string | null | undefined,
+): TypeSafeUpstream {
+  if (!baseURL) return TYPESAFE_UPSTREAMS[0];
+  return (
+    TYPESAFE_UPSTREAMS.find((upstream) => upstream.baseURL === baseURL) ??
+    TYPESAFE_UPSTREAMS[TYPESAFE_UPSTREAMS.length - 1]
+  );
+}
 
 export type AnthropicModel = (typeof anthropicModels)[number];
 export type VertexAIModel = (typeof vertexAIModels)[number];

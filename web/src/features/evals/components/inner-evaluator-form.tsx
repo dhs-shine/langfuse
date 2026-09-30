@@ -689,11 +689,15 @@ export const InnerEvaluatorForm = (props: {
 
     // For modern targets, derive status from runOnLive
     const isModern = !isLegacyEvalTarget(values.target);
-    const status = isModern
-      ? values.runOnLive
-        ? JobConfigState.ACTIVE
-        : JobConfigState.INACTIVE
-      : undefined;
+    const status = (() => {
+      if (isModern) {
+        if (values.runOnLive) {
+          return JobConfigState.ACTIVE;
+        }
+        return JobConfigState.INACTIVE;
+      }
+      return undefined;
+    })();
 
     (props.mode === "edit" && props.existingEvaluator?.id
       ? updateJobMutation.mutateAsync({
@@ -914,7 +918,6 @@ export const InnerEvaluatorForm = (props: {
                                 Traces
                                 <Badge
                                   variant="secondary"
-                                  size="sm"
                                   className="border-border border font-normal"
                                 >
                                   Legacy
@@ -995,7 +998,6 @@ export const InnerEvaluatorForm = (props: {
                           Low-level SDK methods
                           <Badge
                             variant="secondary"
-                            size="sm"
                             className="border-border border font-normal"
                           >
                             Legacy

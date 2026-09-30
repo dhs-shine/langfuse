@@ -24,7 +24,8 @@ import {
   type Placement,
 } from "@floating-ui/react";
 import { cva } from "class-variance-authority";
-import { ChevronRight, type LucideIcon } from "lucide-react";
+import { type LucideIcon } from "lucide-react";
+import { DropdownIndicator } from "@/src/components/design-system/DropdownIndicator/DropdownIndicator";
 import Link from "next/link";
 import * as React from "react";
 
@@ -96,18 +97,41 @@ type MenuAction =
   | { href: string; onClick?: never }
   | { href?: never; onClick: () => void };
 
+type DropdownMenuItemAction =
+  | {
+      href: string;
+      linkTarget?: "_blank";
+      onClick?: never;
+      onAfterNavigate?: () => void;
+    }
+  | {
+      href?: never;
+      linkTarget?: never;
+      onClick: () => void;
+      onAfterNavigate?: never;
+    };
+
+type SearchBehavior =
+  | "default"
+  | "hide"
+  | "always-show"
+  | "show-when-no-results";
+
 type DropdownMenuItem = {
   disabled?: { reason: string };
   id: string;
   title: string;
+  tooltip?: string;
+  badge?: React.ReactNode;
   icon?: LucideIcon;
+  searchBehavior?: SearchBehavior;
   type: "item";
   variant?: "default" | "destructive";
   secondaryAction?: MenuAction & {
     ariaLabel: string;
     icon: LucideIcon;
   };
-} & MenuAction;
+} & DropdownMenuItemAction;
 
 type DropdownMenuCheckboxItem = {
   checked: boolean;
@@ -116,6 +140,7 @@ type DropdownMenuCheckboxItem = {
   id: string;
   title: string;
   icon?: LucideIcon;
+  searchBehavior?: SearchBehavior;
   onCheckedChange: (checked: boolean) => void;
   type: "checkbox";
 };
@@ -126,6 +151,7 @@ type DropdownMenuSubmenu = {
   title: string;
   icon?: LucideIcon;
   items: DropdownMenuItemDefinition[];
+  searchBehavior?: SearchBehavior;
   search?: { placeholder: string };
   type: "submenu";
 };
@@ -150,6 +176,7 @@ type DropdownMenuProps = {
   placement?: Placement;
   search?: { placeholder: string };
   title?: string;
+  description?: string;
 };
 
 function DropdownMenu(props: DropdownMenuProps) {
@@ -170,6 +197,7 @@ function DropdownMenu(props: DropdownMenuProps) {
 function DropdownMenuNode({
   ariaLabel,
   children,
+  description,
   disabled = false,
   items,
   maxHeight = "15rem",
@@ -237,10 +265,21 @@ function DropdownMenuNode({
   const visibleItems = React.useMemo(() => {
     const normalizedQuery = searchQuery.trim().toLocaleLowerCase();
     if (!search || !normalizedQuery) return items;
+    const hasDefaultMatch = items.some((item) => {
+      if (item.type === "separator" || item.type === "loading") return false;
+      if (item.searchBehavior && item.searchBehavior !== "default")
+        return false;
+      return item.title.toLocaleLowerCase().includes(normalizedQuery);
+    });
 
     return items.filter((item) => {
       if (item.type === "separator") return false;
       if (item.type === "loading") return true;
+      if (item.searchBehavior === "hide") return false;
+      if (item.searchBehavior === "always-show") return true;
+      if (item.searchBehavior === "show-when-no-results") {
+        return !hasDefaultMatch;
+      }
       return item.title.toLocaleLowerCase().includes(normalizedQuery);
     });
   }, [items, search, searchQuery]);
@@ -284,7 +323,7 @@ function DropdownMenuNode({
                 refs.setFloating(element);
                 register(element);
               }}
-              className={menuVariants()}
+              className={menuVariants({ className: description && "w-80" })}
               style={{ ...floatingStyles, maxHeight }}
               {...getFloatingProps({ onScroll: recompute })}
               {...(ariaLabel || title
@@ -297,6 +336,11 @@ function DropdownMenuNode({
               {title ? (
                 <div className="border-border bg-popover sticky top-0 z-1 border-b px-3 py-2.5 text-sm font-bold">
                   {title}
+                  {description && (
+                    <p className="text-muted-foreground mt-1 text-xs font-normal">
+                      {description}
+                    </p>
+                  )}
                 </div>
               ) : null}
               {search ? (
@@ -415,10 +459,9 @@ function DropdownMenuNode({
                               <span className="min-w-0 flex-1 overflow-hidden text-left text-ellipsis whitespace-nowrap">
                                 {item.title}
                               </span>
-                              <ChevronRight
-                                className="ml-2 size-4"
-                                aria-hidden="true"
-                              />
+                              <span className="ml-2 flex">
+                                <DropdownIndicator direction="right" />
+                              </span>
                             </span>
                           </button>
                         )}
@@ -554,7 +597,7 @@ function DropdownMenuNode({
                       role="menuitem"
                       tabIndex={activeIndex === index ? 0 : -1}
                       aria-disabled={item.disabled ? "true" : undefined}
-                      title={item.disabled?.reason}
+                      title={item.disabled?.reason ?? item.tooltip}
                       ref={(element) => {
                         listRef.current[index] = element;
                       }}
@@ -586,6 +629,12 @@ function DropdownMenuNode({
                         <Link
                           data-primary-action=""
                           href={item.href}
+                          target={item.linkTarget}
+                          rel={
+                            item.linkTarget === "_blank"
+                              ? "noopener"
+                              : undefined
+                          }
                           aria-disabled={item.disabled ? "true" : undefined}
                           tabIndex={item.disabled ? -1 : undefined}
                           className={primaryActionVariants()}
@@ -595,6 +644,10 @@ function DropdownMenuNode({
                               return;
                             }
                             tree?.events.emit("click");
+                            item.onAfterNavigate?.();
+                          }}
+                          onAuxClick={(event) => {
+                            if (event.button === 1) item.onAfterNavigate?.();
                           }}
                         >
                           {ItemIcon ? (
@@ -609,6 +662,9 @@ function DropdownMenuNode({
                           >
                             {item.title}
                           </span>
+                          {item.badge ? (
+                            <span className="ml-2 shrink-0">{item.badge}</span>
+                          ) : null}
                         </Link>
                       ) : (
                         <button
@@ -633,6 +689,9 @@ function DropdownMenuNode({
                           >
                             {item.title}
                           </span>
+                          {item.badge ? (
+                            <span className="ml-2 shrink-0">{item.badge}</span>
+                          ) : null}
                         </button>
                       )}
                       {renderedSecondaryAction}

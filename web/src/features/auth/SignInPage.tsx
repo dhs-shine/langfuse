@@ -864,7 +864,7 @@ export default function SignInPage({
                               </Link>
                             </FormLabel>
                             <FormControl>
-                              <PasswordInput {...field} />
+                              <PasswordInput allowPasswordManager {...field} />
                             </FormControl>
                             <FormMessage />
                           </FormItem>
@@ -929,7 +929,7 @@ export default function SignInPage({
               No account yet?{" "}
               <Link
                 href={`/auth/sign-up${router.asPath.includes("?") ? router.asPath.substring(router.asPath.indexOf("?")) : ""}`}
-                className="text-link hover:text-link-hover leading-6 font-bold"
+                className="text-link hover:text-link-hover font-bold"
               >
                 Sign up
               </Link>

@@ -288,7 +288,7 @@ function StandardSignupFlow({
                 <FormItem>
                   <FormLabel>Password</FormLabel>
                   <FormControl>
-                    <PasswordInput {...field} />
+                    <PasswordInput allowPasswordManager {...field} />
                   </FormControl>
                   <FormMessage />
                 </FormItem>
@@ -509,7 +509,7 @@ function SignupFooter() {
       Already have an account?{" "}
       <Link
         href={`/auth/sign-in${router.asPath.includes("?") ? router.asPath.substring(router.asPath.indexOf("?")) : ""}`}
-        className="text-link hover:text-link-hover leading-6 font-bold"
+        className="text-link hover:text-link-hover font-bold"
       >
         Sign in
       </Link>
