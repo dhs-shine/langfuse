@@ -33,7 +33,7 @@ checkout:
 # rejects it and the awf api-proxy remaps it to a fallback model, and the
 # suffixed string matches no Langfuse price. gh-aw v0.86 has no frontmatter
 # knob for effort, so Claude Code uses its default effort for this model.
-model: claude-opus-5
+model: claude-opus-5-5
 
 engine:
   id: claude
@@ -306,6 +306,8 @@ Every denied call still costs a full model turn, so follow these exactly.
    the dependency upgrade and list every covered Dependabot alert number and
    GHSA ID, and every covered code-scanning alert number with its Snyk rule ID,
    CVE, and image.
+   Include this maintainer hint: "If merging another dependency PR causes
+   conflicts, comment `/rebase-security-pr` here to repair this branch and rerun CI."
    This workflow intentionally allows multiple independent PRs. The generic
    `create_pull_request` instruction to stop after the call means: do not modify,
    retry, probe, or publish that completed branch again. It does not end this

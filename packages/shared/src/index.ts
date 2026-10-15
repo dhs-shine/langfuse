@@ -99,6 +99,7 @@ export * from "./features/prompts/constants";
 
 // skills
 export * from "./features/skills/types";
+export * from "./features/skills/trace";
 export * from "./features/skills/constants";
 
 export {
@@ -129,6 +130,7 @@ export * from "./domain";
 // io representation
 export * from "./utils/IORepresentation";
 export * from "./utils/mediaReferences";
+export * from "./utils/s3Uri";
 
 // analytics integrations (client-safe)
 export * from "./features/analytics-integrations";

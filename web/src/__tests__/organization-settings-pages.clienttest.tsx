@@ -51,6 +51,10 @@ vi.mock("@/src/ee/features/billing/components/BillingSettings", () => ({
   BillingSettings: () => null,
 }));
 
+vi.mock("@/src/features/organization-usage", () => ({
+  OrganizationUsageBreakdown: () => null,
+}));
+
 vi.mock("@/src/features/entitlements/hooks", () => ({
   useHasEntitlement: vi.fn(),
   usePlan: vi.fn(),
@@ -60,7 +64,8 @@ vi.mock("@/src/ee/features/sso-settings", () => ({
   SSOSettings: () => null,
 }));
 
-vi.mock("@langfuse/shared", () => ({
+vi.mock("@langfuse/shared", async () => ({
+  ...(await vi.importActual("@langfuse/shared")),
   isCloudPlan: vi.fn(() => false),
 }));
 
@@ -226,5 +231,47 @@ describe("useOrganizationSettingsPages", () => {
       "ai-gateway-api-keys",
     ]);
     expect(gatewayPages.every((page) => page.show === true)).toBe(true);
+  });
+
+  it("shows the usage page instead of the billing page without cloud billing", () => {
+    vi.mocked(useHasOrganizationAccess).mockImplementation(
+      ({ scope }) => scope === "organizationUsage:read",
+    );
+
+    const { result } = renderHook(() => useOrganizationSettingsPages());
+    const show = (slug: string) =>
+      result.current.find((page) => page.slug === slug)?.show;
+
+    expect(show("usage")).toBe(true);
+    expect(show("billing")).toBe(false);
+  });
+
+  it("hides the usage page on cloud, where the billing page embeds the breakdown", () => {
+    vi.mocked(useHasOrganizationAccess).mockImplementation(
+      ({ scope }) => scope === "organizationUsage:read",
+    );
+    vi.mocked(useHasEntitlement).mockImplementation(
+      (entitlement) => entitlement === "cloud-billing",
+    );
+    vi.mocked(useIsCloudBillingAvailable).mockReturnValue(true);
+
+    const { result } = renderHook(() => useOrganizationSettingsPages());
+    const show = (slug: string) =>
+      result.current.find((page) => page.slug === slug)?.show;
+
+    expect(show("usage")).toBe(false);
+    expect(show("billing")).toBe(true);
+  });
+
+  it("hides the usage page without usage access", () => {
+    const { result } = renderHook(() => useOrganizationSettingsPages());
+
+    expect(useHasOrganizationAccess).toHaveBeenCalledWith({
+      organizationId: "org-1",
+      scope: "organizationUsage:read",
+    });
+    expect(result.current.find((page) => page.slug === "usage")?.show).toBe(
+      false,
+    );
   });
 });

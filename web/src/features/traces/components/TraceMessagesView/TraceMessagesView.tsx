@@ -18,7 +18,7 @@ import { ChatMessageList } from "@/src/features/traces/components/ChatMessageLis
 import { useSelection } from "@/src/features/traces/contexts/SelectionContext";
 import { useTraceData } from "@/src/features/traces/contexts/TraceDataContext";
 import { toIOPreview } from "@/src/features/traces/parsers/toIOPreview";
-import { useDesktopLayoutContextOptional } from "../TraceLayoutDesktop";
+import { IO_SECTIONS_FLUSH_CLASS } from "@/src/features/traces/constants/ioSectionClasses";
 
 type Transcript = NonNullable<
   RouterOutputs["events"]["transcriptByTraceId"]["transcript"]
@@ -61,7 +61,7 @@ export function TraceMessagesView() {
 
   const { threads } = data.transcript;
   return (
-    <div className="flex h-full w-full flex-col gap-6 overflow-y-auto p-3">
+    <div className="flex h-full w-full flex-col gap-6 overflow-y-auto py-3">
       {data.cutoff && <CutoffNotice />}
       {threads.map((thread, index) => (
         <ErrorBoundary
@@ -94,8 +94,7 @@ function ThreadBlock({
   projectId: string;
   traceId: string;
 }) {
-  const { setSelectedNodeId } = useSelection();
-  const layout = useDesktopLayoutContextOptional();
+  const { selectNode } = useSelection();
   // History is context, not the point of the view; start folded.
   const [showHistory, setShowHistory] = useState(false);
   // Media of the emitting observations, so inline references resolve the way
@@ -113,8 +112,7 @@ function ThreadBlock({
   const media = mediaQueries.flatMap((query) => query.data ?? []);
 
   const selectObservation = (id: string) => {
-    setSelectedNodeId(id);
-    layout?.expandDetailPanel();
+    selectNode(id);
   };
 
   return (
@@ -184,7 +182,7 @@ function MessageList({
   );
 
   return (
-    <div className="[&_.io-message-content]:px-2 [&_.io-message-header]:px-2">
+    <div className={IO_SECTIONS_FLUSH_CLASS}>
       <ChatMessageList
         messages={preview.allMessages}
         shouldRenderMarkdown={shouldRenderMarkdown}
@@ -219,7 +217,7 @@ function CutoffNotice() {
 
 function Notice({ children }: { children: React.ReactNode }) {
   return (
-    <div className="text-muted-foreground m-3 rounded-md border border-dashed p-3 text-sm">
+    <div className="text-muted-foreground my-3 rounded-md border border-dashed p-3 text-sm">
       {children}
     </div>
   );

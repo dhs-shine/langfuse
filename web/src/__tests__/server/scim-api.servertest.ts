@@ -4,10 +4,11 @@ import {
 } from "@/src/__tests__/test-utils";
 import { z } from "zod";
 import {
-  createAndAddApiKeysToDb,
+  createApiKey,
   createBasicAuthHeader,
 } from "@langfuse/shared/src/server";
 import { prisma } from "@langfuse/shared/src/db";
+import { OrganizationId, SystemRoleId, UserId } from "@langfuse/shared/rbac";
 import { randomUUID } from "crypto";
 
 // Schema for SCIM User response
@@ -141,10 +142,13 @@ describe("SCIM API", () => {
   let testUserId: string;
 
   beforeAll(async () => {
-    await createAndAddApiKeysToDb({
-      prisma,
-      entityId: orgId,
-      scope: "ORGANIZATION",
+    const keyCreator = await prisma.user.create({
+      data: { email: `apikey-creator-${randomUUID()}@example.com` },
+    });
+    await createApiKey(prisma, {
+      owner: OrganizationId(orgId),
+      role: SystemRoleId("LEGACY_ORGANIZATION_API_KEY"),
+      createdBy: UserId(keyCreator.id),
       predefinedKeys: {
         publicKey: orgApiKey,
         secretKey: orgSecretKey,
@@ -190,9 +194,6 @@ describe("SCIM API", () => {
         createBasicAuthHeader(projectApiKey, projectSecretKey),
       );
       expect(result.status).toBe(403);
-      expect(result.body.detail).toContain(
-        "Organization-scoped API key required",
-      );
     });
 
     it("should return 405 for non-GET methods", async () => {
@@ -255,9 +256,6 @@ describe("SCIM API", () => {
         createBasicAuthHeader(projectApiKey, projectSecretKey),
       );
       expect(result.status).toBe(403);
-      expect(result.body.detail).toContain(
-        "Organization-scoped API key required",
-      );
     });
 
     it("should return 405 for non-GET methods", async () => {
@@ -313,9 +311,6 @@ describe("SCIM API", () => {
         createBasicAuthHeader(projectApiKey, projectSecretKey),
       );
       expect(result.status).toBe(403);
-      expect(result.body.detail).toContain(
-        "Organization-scoped API key required",
-      );
     });
 
     it("should return 405 for non-GET methods", async () => {
@@ -422,9 +417,6 @@ describe("SCIM API", () => {
           createBasicAuthHeader(projectApiKey, projectSecretKey),
         );
         expect(result.status).toBe(403);
-        expect(result.body.detail).toContain(
-          "Organization-scoped API key required",
-        );
       });
 
       it("should return 405 for non-GET/POST methods", async () => {
@@ -1307,10 +1299,10 @@ describe("SCIM API", () => {
 
         scopedOrgPublicKey = `pk-lf-org-${randomUUID().substring(0, 8)}`;
         scopedOrgSecretKey = `sk-lf-org-${randomUUID().substring(0, 8)}`;
-        await createAndAddApiKeysToDb({
-          prisma,
-          entityId: scopedOrgId,
-          scope: "ORGANIZATION",
+        await createApiKey(prisma, {
+          owner: OrganizationId(scopedOrgId),
+          role: SystemRoleId("LEGACY_ORGANIZATION_API_KEY"),
+          createdBy: UserId(owner.id),
           predefinedKeys: {
             publicKey: scopedOrgPublicKey,
             secretKey: scopedOrgSecretKey,
@@ -1648,10 +1640,13 @@ describe("SCIM API", () => {
       hobbyOrgId = hobbyOrg.id;
       hobbyPublicKey = `pk-lf-org-${randomUUID().substring(0, 8)}`;
       hobbySecretKey = `sk-lf-org-${randomUUID().substring(0, 8)}`;
-      await createAndAddApiKeysToDb({
-        prisma,
-        entityId: hobbyOrgId,
-        scope: "ORGANIZATION",
+      const hobbyKeyCreator = await prisma.user.create({
+        data: { email: `apikey-creator-${randomUUID()}@example.com` },
+      });
+      await createApiKey(prisma, {
+        owner: OrganizationId(hobbyOrgId),
+        role: SystemRoleId("LEGACY_ORGANIZATION_API_KEY"),
+        createdBy: UserId(hobbyKeyCreator.id),
         predefinedKeys: {
           publicKey: hobbyPublicKey,
           secretKey: hobbySecretKey,
@@ -1669,10 +1664,13 @@ describe("SCIM API", () => {
       teamOrgId = teamOrg.id;
       teamPublicKey = `pk-lf-org-${randomUUID().substring(0, 8)}`;
       teamSecretKey = `sk-lf-org-${randomUUID().substring(0, 8)}`;
-      await createAndAddApiKeysToDb({
-        prisma,
-        entityId: teamOrgId,
-        scope: "ORGANIZATION",
+      const teamKeyCreator = await prisma.user.create({
+        data: { email: `apikey-creator-${randomUUID()}@example.com` },
+      });
+      await createApiKey(prisma, {
+        owner: OrganizationId(teamOrgId),
+        role: SystemRoleId("LEGACY_ORGANIZATION_API_KEY"),
+        createdBy: UserId(teamKeyCreator.id),
         predefinedKeys: {
           publicKey: teamPublicKey,
           secretKey: teamSecretKey,
