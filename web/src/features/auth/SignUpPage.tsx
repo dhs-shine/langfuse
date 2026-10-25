@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-use-before-define */
 import { Button } from "@/src/components/ui/button";
 import {
   Form,
@@ -17,8 +18,8 @@ import * as z from "zod";
 import { env } from "@/src/env.mjs";
 import { useRef, useState } from "react";
 import { LangfuseIcon } from "@/src/components/design-system/LangfuseIcon/LangfuseIcon";
-import { CloudPrivacyNotice } from "@/src/features/auth/components/AuthCloudPrivacyNotice";
-import { CloudRegionSwitch } from "@/src/features/auth/components/AuthCloudRegionSwitch";
+import { CloudPrivacyNotice } from "@/src/features/auth/components/CloudPrivacyNotice";
+import { CloudRegionSwitch } from "@/src/features/auth/components/CloudRegionSwitch";
 import {
   FALLBACK_AUTH_PROVIDERS,
   SSOButtons,
@@ -35,7 +36,10 @@ import { usePostHogClientCapture } from "@/src/features/posthog-analytics";
 import useLocalStorage from "@/src/components/useLocalStorage";
 import { noUrlCheck, StringNoHTMLNonEmpty } from "@langfuse/shared";
 import { PASSWORD_SETUP_EMAIL_STORAGE_KEY } from "@/src/features/auth-credentials";
-import { getDemoTargetPath } from "@/src/features/onboarding/lib/demoCallbackRedirect";
+import {
+  getOnboardingTargetPath,
+  getSignupCallbackUrl,
+} from "@/src/features/onboarding/lib/demoCallbackRedirect";
 import {
   TurnstileWidget,
   type TurnstileWidgetHandle,
@@ -252,20 +256,10 @@ function StandardSignupFlow({
     values: z.infer<typeof signupSchema>,
     loginTurnstileToken: string | undefined,
   ) {
-    let callbackUrl =
-      targetPath ??
-      (isLangfuseCloud
-        ? `${env.NEXT_PUBLIC_BASE_PATH ?? ""}/onboarding`
-        : `${env.NEXT_PUBLIC_BASE_PATH ?? ""}/`);
-    const demoTargetPath = getDemoTargetPath(targetPath);
-    if (isLangfuseCloud && demoTargetPath) {
-      callbackUrl = `${env.NEXT_PUBLIC_BASE_PATH ?? ""}/onboarding?targetPath=${encodeURIComponent(demoTargetPath)}`;
-    }
-
     await signIn<"credentials">("credentials", {
       email: values.email,
       password: values.password,
-      callbackUrl,
+      callbackUrl: getSignupCallbackUrl({ targetPath, isLangfuseCloud }),
       turnstileToken: loginTurnstileToken,
     });
   }
@@ -435,6 +429,7 @@ function StandardSignupFlow({
 function VerifiedSignupFlow({
   authProviders,
 }: Pick<PageProps, "authProviders" | "emailVerificationRequired">) {
+  const { isLangfuseCloud } = useLangfuseCloudRegion();
   const router = useRouter();
   const capture = usePostHogClientCapture();
   const emailParam = router.query.email as string | undefined;
@@ -442,9 +437,12 @@ function VerifiedSignupFlow({
   const targetPath = queryTargetPath
     ? getSafeRedirectPath(queryTargetPath)
     : undefined;
-  const demoTargetPath = getDemoTargetPath(targetPath);
-  const setupPasswordPath = demoTargetPath
-    ? `/auth/setup-password?targetPath=${encodeURIComponent(demoTargetPath)}`
+  const setupTargetPath = getOnboardingTargetPath({
+    targetPath,
+    isLangfuseCloud,
+  });
+  const setupPasswordPath = setupTargetPath
+    ? `/auth/setup-password?targetPath=${encodeURIComponent(setupTargetPath)}`
     : "/auth/setup-password";
 
   const [formError, setFormError] = useState<string | null>(null);

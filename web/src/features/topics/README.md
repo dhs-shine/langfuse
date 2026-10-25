@@ -6,31 +6,25 @@ sidebar, direct page, and Topics API also require deployment enablement and
 project permissions. Processing additionally requires the project allowlist.
 
 - `TopicsPage.tsx` owns facet configuration, the execution history drawer,
-  the current-results query and facet selection. A compact header keeps the facet
-  picker, time range and processing action on one row; configuration, history and
-  refresh live in the overflow menu. `CurrentTopics.tsx` owns the map query, trace
-  navigation and summary inspector; `CurrentTopicsView.tsx` presents the selected
-  facet in independently scrolling panels: map and groups on the left, traces on
-  the right. Narrow views keep the map above Topics/Traces tabs, with readable
-  summary rows on phones and all processing controls in the mobile overflow
-  menu. Selecting a group filters traces without changing the active tab.
-  `useTopicTraceFilters.ts` owns URL-backed facet selection; filters and search
-  live only in localStorage, scoped to each project/facet. Switching facets
-  restores that facet's state, defaulting to unfiltered on first visit. Filter
-  and search URL parameters are neither read nor written.
-  `TopicsTraceToolbar.tsx` uses the shared search bar for topic, assignment, and
-  text filtering. `topic-trace-filters.ts` owns its registry and local evaluation:
-  literal phrase search across summaries, topic names and trace IDs, OR within
-  a selection and AND between fields. Filtering applies before pagination.
-  Saved topic IDs absent from current options remain editable as unavailable
-  topics; their matching semantics are preserved across date-range changes.
-  Table results determine matching map IDs without changing saved positions or
-  the camera; nonmatching dots remain faint and inspectable. The map reports
-  its own matching count because its saved cohort can differ from current rows.
-  Fit/Home/Escape retain table filters; editing or removing search tokens updates
-  the same saved facet state. Search actions reuse metadata-only filter analytics with
-  `tableName: topics` and `isV4: false`. Query text and topic names remain
-  blocked from replay by the shared search bar.
+  the current-results query and facet selection. The header shows the facet
+  tabs, then "Visualize as" (`TopicsResultsViewSelect.tsx`) with Treemap
+  (default), Grid and Map, remembered in localStorage; time range and processing
+  actions sit on the right, configuration and history in the overflow menu.
+  `CurrentTopics.tsx` owns the map query (Grid and Map) and trace navigation.
+  Treemap sizes one tile per topic by trace count, plus a grey Unassigned tile
+  for traces without a topic, traces below; Grid snaps the
+  saved map projection onto one square per trace (sampled above 1,000), legend
+  under it and traces on the right. Both list the selected topic's traces in
+  `TopicTraceList`, with an Open in Tracing link limited to those trace IDs.
+  Map is the original cluster map (`CurrentTopicsView.tsx`) with its trace table.
+  Map clicks select a trace without opening peek. `CurrentTopicsView` keeps
+  that trace ID in project-scoped sessionStorage, shared across facets, and
+  highlights its map point and table row. Selection changes reveal the trace's
+  table page and follow it through result refreshes until the user paginates.
+  Clearing selection preserves the current page. Filtered-out map points cannot
+  replace selection; filters can hide a selection without discarding it. Table row
+  and trace-link clicks select the trace and open peek.
+  `useTopicTraceFilters.ts` owns URL-backed facet selection.
   Peek defaults to the trace panel width and has its own resize preference.
   The results workspace stays mounted, including
   while a run's status is open. Execution URL parameters open progress, errors
@@ -69,7 +63,9 @@ project permissions. Processing additionally requires the project allowlist.
   topics. Trace selection includes filters, IDs, time ranges, a maximum batch size,
   and exclusions. Stored summary and embedding reuse is enabled by default in Review & Run.
   The dialog uses the evaluator stepper: Choose facets, Select traces, and
-  Review & Run. Generate topics uses Select summaries for the second step.
+  Review & Run. Generate topics uses Select trace summaries for the second step;
+  its time range filters by the trace start time. Both manual-processing pickers
+  limit custom ranges to 90 days, matching the Topics header.
   All steps start expanded; model details and reuse settings live in review.
   Preview trace clicks open a new tab, preserving the run dialog and selection.
   Without a compatible map, summaries wait for an explicit Update topics run.
@@ -107,11 +103,6 @@ project permissions. Processing additionally requires the project allowlist.
   Matching counts can change between preview and submission, and source trace
   content can change before the worker loads it. Preview responses are not a
   historical trace snapshot.
-- `SummaryInspector.tsx` displays the current transcript for a saved summary.
-  The current-results table owns its dialog and fetches only when inspection is
-  open. It uses the same deterministic transcript loader as the worker, does
-  not run inference, and explains when the source is unavailable or may differ
-  from the original input. Transcript content is marked `ph-no-capture`.
 - `TopicEmbeddingMap.tsx` renders the published map's loading, error and ready states
   from supplied query data and trace-navigation callbacks.
   `EmbeddingMapView.tsx` preserves the controlled selection contract as a drop-in
@@ -173,10 +164,9 @@ project permissions. Processing additionally requires the project allowlist.
   in the persisted discovery cohort’s order. It returns only map points and counts for
   missing or unpositioned summaries, never embedding vectors.
   History and detail reads reconcile interrupted/queued retries with the queue.
-  Current results return summaries and their applicable assignments; inspection
-  accepts a saved summary identity scoped to the project. Maps read their original
-  discovery cohort and coordinates while summary text reflects the latest stored
-  result. These reads survive transient job state expiry.
+  Current results return summaries and their applicable assignments. Maps read
+  their original discovery cohort and coordinates while summary text reflects the
+  latest stored result. These reads survive transient job state expiry.
   Resume requeues retained job inputs; if they have expired, start a new run.
   Facet prompt edits are a separate page from this setup.
 - `parse-trace-input.ts` validates pasted trace IDs and links without fetching.

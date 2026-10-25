@@ -1,7 +1,7 @@
 /* eslint-disable no-nested-ternary */
 import { useRouter } from "next/router";
 import { ObservationsTable } from "@/src/features/tracing-tables";
-import Page from "@/src/components/layouts/page";
+import Page from "@/src/components/layouts/Page";
 import { api } from "@/src/utils/api";
 import { TracesOnboarding } from "@/src/components/onboarding/TracesOnboarding";
 import { getTracingTabs, TRACING_TABS } from "@/src/features/navigation";
@@ -40,6 +40,7 @@ export default function ObservationsPage() {
     <Page
       headerProps={{
         title: "Tracing",
+        divider: false,
         // Match traces/index.tsx: no delay badge while onboarding tells the
         // user to set up tracing for the first time.
         titleBadges: showOnboarding ? undefined : (

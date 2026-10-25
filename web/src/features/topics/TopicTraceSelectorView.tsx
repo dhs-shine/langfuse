@@ -1,3 +1,4 @@
+/* eslint-disable react/no-unstable-nested-components, @typescript-eslint/no-use-before-define */
 import { useState, type ChangeEvent, type ComponentProps } from "react";
 import { Alert } from "@/src/components/design-system/Alert/Alert";
 import { env } from "@/src/env.mjs";
@@ -139,7 +140,7 @@ export function TopicTraceSelectorView({
                   "last30Days",
                   "last90Days",
                 ]}
-                maxRangeMs={93 * 86_400_000}
+                maxRangeMs={90 * 86_400_000}
                 className="my-0"
               />
             </div>
@@ -227,7 +228,7 @@ export function TopicTraceSelectorView({
             <Alert variant="destructive" size="sm">
               <Alert.Description>
                 <p className="break-words">
-                  Choose a start before the end, within a 93-day window.
+                  Choose a start before the end, within a 90-day window.
                 </p>
               </Alert.Description>
             </Alert>

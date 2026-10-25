@@ -1,7 +1,7 @@
 /* eslint-disable no-nested-ternary */
 import { useRouter } from "next/router";
 import TracesTable from "@/src/features/traces/TracesTable";
-import Page from "@/src/components/layouts/page";
+import Page from "@/src/components/layouts/Page";
 import { api } from "@/src/utils/api";
 import { TracesOnboarding } from "@/src/components/onboarding/TracesOnboarding";
 import { getTracingTabs, TRACING_TABS } from "@/src/features/navigation";
@@ -41,6 +41,7 @@ export default function TracesPage() {
       <Page
         headerProps={{
           title: "Tracing",
+          divider: false,
           help: {
             description:
               "A trace represents a single function/api invocation. Traces contain observations. See [docs](https://langfuse.com/docs/observability/data-model) to learn more.",
@@ -58,6 +59,7 @@ export default function TracesPage() {
     <Page
       headerProps={{
         title: "Tracing",
+        divider: false,
         titleBadges: <V4MigrationDelayBadge page="traces" />,
         help: {
           description: (

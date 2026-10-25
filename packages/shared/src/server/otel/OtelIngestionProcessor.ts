@@ -1,20 +1,6 @@
 /* eslint-disable no-nested-ternary */
 import { randomUUID } from "crypto";
-import {
-  MAX_SKILLS_PER_OBSERVATION,
-  SkillsAvailableSchema,
-  SkillsResourceLoadedSchema,
-  type SkillsAvailable,
-  type SkillsResourceLoaded,
-} from "../../features/skills/trace";
-import {
-  MAX_SKILL_CATALOG_JSON_BYTES,
-  MAX_SKILL_ERROR_JSON_BYTES,
-  MAX_SKILL_PATH_LENGTH,
-  MAX_SKILL_TOOL_ARGS_JSON_BYTES,
-  SKILL_RESOURCE_TOOL_NAMES,
-} from "../../features/skills/constants";
-
+import { extractSkillsFromObservation } from "../ingestion/extractSkillsBackend";
 import {
   ForbiddenError,
   ObservationLevel,
@@ -46,10 +32,7 @@ import {
   type IngestionSdkCanonicalName,
 } from "../";
 
-import {
-  AI_FEATURE_OTEL_SDK_NAME,
-  LangfuseOtelSpanAttributes,
-} from "./attributes";
+import { LangfuseOtelSpanAttributes } from "./attributes";
 import {
   isClaudeManagedAgentSessionCreation,
   isClaudeManagedAgentSpan,
@@ -60,7 +43,6 @@ import { OtelIngestionQueue } from "../redis/otelIngestionQueue";
 import { isValidDateString, flattenJsonToPathArrays } from "./utils";
 import { convertDateToClickhouseDateTime } from "../clickhouse/client";
 import { isNullOrUndefined } from "../../utils/isNullOrUndefined";
-import { safeJsonParse } from "../../utils/json";
 import { defineOwnValue } from "../../utils/objects";
 
 export const AI_GATEWAY_INSTRUMENTATION_SCOPE_NAME = "langfuse-ai-gateway";
@@ -597,18 +579,33 @@ export class OtelIngestionProcessor {
                 const canLinkPrompt =
                   observationType === ObservationType.GENERATION;
 
+                const name = this.extractName(
+                  span.name,
+                  spanAttributes,
+                  observationType,
+                  scopeSpan.scope?.name,
+                );
+
+                const level =
+                  parseObservationLevel(
+                    spanAttributes[
+                      LangfuseOtelSpanAttributes.OBSERVATION_LEVEL
+                    ],
+                  ) ??
+                  (span.status?.code === 2
+                    ? ObservationLevel.ERROR
+                    : scopeSpan?.scope?.name === "livekit-agents" &&
+                        LIVEKIT_DEBUG_SPAN_NAMES.has(span.name)
+                      ? ObservationLevel.DEBUG
+                      : ObservationLevel.DEFAULT);
+
                 events.push({
                   projectId: this.projectId,
                   traceId,
                   spanId,
                   parentSpanId,
 
-                  name: this.extractName(
-                    span.name,
-                    spanAttributes,
-                    observationType,
-                    scopeSpan.scope?.name,
-                  ),
+                  name,
                   type: observationType,
                   environment: this.extractEnvironment(
                     spanAttributes,
@@ -622,18 +619,7 @@ export class OtelIngestionProcessor {
                   startTimeISO,
                   endTimeISO,
 
-                  level:
-                    parseObservationLevel(
-                      spanAttributes[
-                        LangfuseOtelSpanAttributes.OBSERVATION_LEVEL
-                      ],
-                    ) ??
-                    (span.status?.code === 2
-                      ? ObservationLevel.ERROR
-                      : scopeSpan?.scope?.name === "livekit-agents" &&
-                          LIVEKIT_DEBUG_SPAN_NAMES.has(span.name)
-                        ? ObservationLevel.DEBUG
-                        : ObservationLevel.DEFAULT),
+                  level,
                   statusMessage:
                     spanAttributes[
                       LangfuseOtelSpanAttributes.OBSERVATION_STATUS_MESSAGE
@@ -641,14 +627,18 @@ export class OtelIngestionProcessor {
                     span.status?.message ??
                     null,
 
-                  ...this.extractSkills(
-                    spanAttributes,
+                  ...extractSkillsFromObservation({
+                    skillsAvailable:
+                      spanAttributes[
+                        LangfuseOtelSpanAttributes.OBSERVATION_SKILLS_AVAILABLE
+                      ],
                     observationType,
-                    this.extractName(span.name, spanAttributes),
+                    name,
                     input,
                     output,
-                    span.status?.code,
-                  ),
+                    isError: level === ObservationLevel.ERROR,
+                    projectId: this.projectId,
+                  }),
                   promptName: canLinkPrompt
                     ? (spanAttributes?.[
                         LangfuseOtelSpanAttributes.OBSERVATION_PROMPT_NAME
@@ -691,6 +681,7 @@ export class OtelIngestionProcessor {
                   userId: this.extractUserId(
                     spanAttributes,
                     decodeMetadataValues,
+                    resourceAttributes,
                   ),
                   sessionId: this.extractSessionId(
                     spanAttributes,
@@ -744,10 +735,6 @@ export class OtelIngestionProcessor {
             return events;
           });
 
-        if (this.sdkName === AI_FEATURE_OTEL_SDK_NAME) {
-          this.denormalizeAiFeatureChildTraceNames(events);
-        }
-
         return events;
       } catch (error) {
         logger.error("Error processing OTEL spans to events:", {
@@ -758,45 +745,6 @@ export class OtelIngestionProcessor {
         throw error;
       }
     });
-  }
-
-  /**
-   * Copy the wrapping root's observation.traceName onto sibling events in the
-   * same batch that omitted langfuse.trace.name. That OTEL attribute is a
-   * trace-update signal; filling the events-table field keeps cost-by-trace-name
-   * filters working without rewriting the trace.
-   */
-  private denormalizeAiFeatureChildTraceNames(
-    events: Array<{
-      traceId?: string;
-      traceName?: string | null;
-      parentSpanId?: string | null;
-      isAppRoot?: boolean;
-    }>,
-  ): void {
-    const traceNameByTraceId = new Map<string, string>();
-
-    for (const event of events) {
-      if (!event.traceId || !event.traceName) {
-        continue;
-      }
-
-      const isRoot = !event.parentSpanId || event.isAppRoot === true;
-      if (isRoot) {
-        traceNameByTraceId.set(event.traceId, event.traceName);
-      }
-    }
-
-    for (const event of events) {
-      if (event.traceName || !event.traceId) {
-        continue;
-      }
-
-      const traceName = traceNameByTraceId.get(event.traceId);
-      if (traceName !== undefined) {
-        event.traceName = traceName;
-      }
-    }
   }
 
   /**
@@ -1178,7 +1126,11 @@ export class OtelIngestionProcessor {
           (attributes?.[LangfuseOtelSpanAttributes.RELEASE] as string) ??
           resourceAttributes?.[LangfuseOtelSpanAttributes.RELEASE] ??
           null,
-        userId: this.extractUserId(attributes, decodeMetadataValues),
+        userId: this.extractUserId(
+          attributes,
+          decodeMetadataValues,
+          resourceAttributes,
+        ),
         sessionId: this.extractSessionId(
           attributes,
           decodeMetadataValues,
@@ -1222,7 +1174,8 @@ export class OtelIngestionProcessor {
           (attributes?.[LangfuseOtelSpanAttributes.RELEASE] as string) ??
           resourceAttributes?.[LangfuseOtelSpanAttributes.RELEASE] ??
           null,
-        userId: this.extractUserId(attributes, decodeMetadataValues),
+        // Child updates must not replace an explicit trace user with a fallback.
+        userId: this.extractExplicitUserId(attributes, decodeMetadataValues),
         /** CMA session inference belongs to root traces and individual observations. */
         sessionId: this.extractSessionId(
           attributes,
@@ -1331,16 +1284,28 @@ export class OtelIngestionProcessor {
     // Prompts can only be linked to GENERATION observations
     const canLinkPrompt = mappedObservationType === ObservationType.GENERATION;
 
+    const name = this.extractName(
+      span.name,
+      attributes,
+      mappedObservationType,
+      instrumentationScopeName,
+    );
+    const level =
+      parseObservationLevel(
+        attributes[LangfuseOtelSpanAttributes.OBSERVATION_LEVEL],
+      ) ??
+      (span.status?.code === 2
+        ? ObservationLevel.ERROR
+        : scopeSpan?.scope?.name === "livekit-agents" &&
+            LIVEKIT_DEBUG_SPAN_NAMES.has(span.name)
+          ? ObservationLevel.DEBUG
+          : ObservationLevel.DEFAULT);
+
     const observation = {
       id: this.parseId(span.spanId?.data ?? span.spanId),
       traceId,
       parentObservationId,
-      name: this.extractName(
-        span.name,
-        attributes,
-        mappedObservationType,
-        instrumentationScopeName,
-      ),
+      name,
       startTime: startTimeISO,
       endTime: endTimeISO,
       environment: this.extractEnvironment(attributes, resourceAttributes),
@@ -1349,16 +1314,7 @@ export class OtelIngestionProcessor {
         startTimeISO,
       ),
       metadata: normalizedToolMetadata.metadata,
-      level:
-        parseObservationLevel(
-          attributes[LangfuseOtelSpanAttributes.OBSERVATION_LEVEL],
-        ) ??
-        (span.status?.code === 2
-          ? ObservationLevel.ERROR
-          : scopeSpan?.scope?.name === "livekit-agents" &&
-              LIVEKIT_DEBUG_SPAN_NAMES.has(span.name)
-            ? ObservationLevel.DEBUG
-            : ObservationLevel.DEFAULT),
+      level,
       statusMessage:
         attributes[LangfuseOtelSpanAttributes.OBSERVATION_STATUS_MESSAGE] ??
         span.status?.message ??
@@ -1374,14 +1330,16 @@ export class OtelIngestionProcessor {
       model: skipModelUsageAndCost
         ? undefined
         : this.extractModelName(attributes),
-      ...this.extractSkills(
-        attributes,
-        mappedObservationType,
-        this.extractName(span.name, attributes),
+      ...extractSkillsFromObservation({
+        skillsAvailable:
+          attributes[LangfuseOtelSpanAttributes.OBSERVATION_SKILLS_AVAILABLE],
+        observationType: mappedObservationType,
+        name,
         input,
         output,
-        span.status?.code,
-      ),
+        isError: level === ObservationLevel.ERROR,
+        projectId: this.projectId,
+      }),
       promptName: canLinkPrompt
         ? (attributes?.[LangfuseOtelSpanAttributes.OBSERVATION_PROMPT_NAME] ??
           attributes["langfuse.prompt.name"] ??
@@ -2749,7 +2707,7 @@ export class OtelIngestionProcessor {
         "ai.telemetry.metadata.tags",
         "ai.telemetry.metadata.langfusePrompt",
       ]),
-      decodeValues,
+      decodedPrefix: decodeValues ? metadataKeyPrefix : undefined,
     });
 
     return {
@@ -2759,6 +2717,32 @@ export class OtelIngestionProcessor {
   }
 
   private extractUserId(
+    attributes: Record<string, unknown>,
+    decodeMetadataValues: boolean,
+    resourceAttributes: Record<string, unknown>,
+  ): string | undefined {
+    // Explicit identifiers in either scope take precedence over usernames.
+    return (
+      this.extractExplicitUserId(attributes, decodeMetadataValues) ??
+      this.extractStringAttribute(
+        resourceAttributes,
+        ["langfuse.user.id", "user.id"],
+        decodeMetadataValues,
+      ) ??
+      this.extractStringAttribute(
+        attributes,
+        ["user.name"],
+        decodeMetadataValues,
+      ) ??
+      this.extractStringAttribute(
+        resourceAttributes,
+        ["user.name"],
+        decodeMetadataValues,
+      )
+    );
+  }
+
+  private extractExplicitUserId(
     attributes: Record<string, unknown>,
     decodeMetadataValues: boolean,
   ): string | undefined {
@@ -3456,25 +3440,43 @@ export class OtelIngestionProcessor {
   private extractCostDetails(
     attributes: Record<string, unknown>,
     context: { spanId: string; traceId: string; source: string },
-  ): Record<string, unknown> {
+  ): Record<string, number> {
     const fromAttribute = this.parseJsonObjectAttribute(
       attributes,
       LangfuseOtelSpanAttributes.OBSERVATION_COST_DETAILS,
       context,
     );
-    if (fromAttribute !== null) return fromAttribute;
+    if (fromAttribute !== null) return this.toNumericEntries(fromAttribute);
 
     const genAiUsageCost = attributes["gen_ai.usage.cost"];
     if (genAiUsageCost != null && genAiUsageCost !== "") {
-      return { total: genAiUsageCost };
+      return this.toNumericEntries({ total: genAiUsageCost });
     }
 
     const openInferenceTotalCost = attributes["llm.cost.total"];
     if (openInferenceTotalCost != null && openInferenceTotalCost !== "") {
-      return { total: openInferenceTotalCost };
+      return this.toNumericEntries({ total: openInferenceTotalCost });
     }
 
     return {};
+  }
+
+  /** Keeps finite numbers and non-blank numeric strings (as numbers); drops other entries such as currency. */
+  private toNumericEntries(
+    details: Record<string, unknown>,
+  ): Record<string, number> {
+    const result: Record<string, number> = {};
+    for (const [key, value] of Object.entries(details)) {
+      const numeric = this.toFiniteNumber(value);
+      if (Number.isFinite(numeric)) result[key] = numeric;
+    }
+    return result;
+  }
+
+  private toFiniteNumber(value: unknown): number {
+    if (typeof value === "number") return value;
+    if (typeof value === "string" && value.trim() !== "") return Number(value);
+    return NaN;
   }
 
   private extractCompletionStartTime(
@@ -3496,11 +3498,17 @@ export class OtelIngestionProcessor {
       // Fallthrough
     }
 
-    // Vercel AI SDK
+    // Vercel AI SDK: <= v6 reports milliseconds, v7 reports the GenAI
+    // semconv metric name in seconds.
     try {
+      const secondsToFirstChunk =
+        attributes["gen_ai.client.operation.time_to_first_chunk"];
       const msToFirstChunk =
         attributes["ai.response.msToFirstChunk"] ??
-        attributes["ai.stream.msToFirstChunk"];
+        attributes["ai.stream.msToFirstChunk"] ??
+        (secondsToFirstChunk != null && secondsToFirstChunk !== ""
+          ? Number(secondsToFirstChunk) * 1000
+          : undefined);
       if (msToFirstChunk && startTimeISO) {
         const msToFirstChunkNumber = Math.ceil(Number(msToFirstChunk));
 
@@ -3667,14 +3675,14 @@ export class OtelIngestionProcessor {
     attributes: Record<string, unknown>;
     prefixes: string[];
     excludedKeys?: Set<string>;
-    // Set for structured-metadata SDKs, which JSON-encode every value.
-    decodeValues?: boolean;
+    /** decodedPrefix holds JSON-encoded values for structured-metadata SDKs */
+    decodedPrefix?: string;
   }): Record<string, unknown> {
     const {
       attributes,
       prefixes,
       excludedKeys = new Set<string>(),
-      decodeValues,
+      decodedPrefix,
     } = params;
     const metadata: Record<string, unknown> = {};
     for (const [key, value] of Object.entries(attributes)) {
@@ -3688,7 +3696,7 @@ export class OtelIngestionProcessor {
           continue;
         }
 
-        if (!decodeValues || typeof value !== "string") {
+        if (prefix !== decodedPrefix || typeof value !== "string") {
           metadata[metadataKey] = value;
           continue;
         }
@@ -3697,14 +3705,7 @@ export class OtelIngestionProcessor {
         // undecodable value (e.g. cut by an attribute length limit) is kept as
         // sent so its content is not lost.
         try {
-          const decoded = JSON.parse(value);
-          // Strings are stored raw and metadata reads JSON-parse every stored
-          // value, so a string such as "42" or '{"a":1}' would read back as a
-          // number or object. Keeping its encoding preserves the string type.
-          metadata[metadataKey] =
-            typeof decoded === "string" && safeJsonParse(decoded) !== undefined
-              ? value
-              : decoded;
+          metadata[metadataKey] = JSON.parse(value);
         } catch {
           metadata[metadataKey] = value;
           recordIncrement("langfuse.ingestion.metadata_undecoded", 1, {
@@ -3717,16 +3718,11 @@ export class OtelIngestionProcessor {
     return metadata;
   }
 
-  // Langfuse SDK spans from a major that opts into decoded per-key metadata.
-  // The language comes from the request header, falling back to the OTel
-  // resource for exports relayed without Langfuse headers.
+  /** shouldDecodeMetadataValues is true for spans of any scope exported by a structured-metadata Langfuse SDK major, versioned by the scope on langfuse-sdk spans and by the request header otherwise */
   private shouldDecodeMetadataValues(
     scopeSpan: any,
     resourceAttributes: Record<string, unknown>,
   ): boolean {
-    if (!scopeSpan?.scope?.name?.startsWith("langfuse-sdk")) {
-      return false;
-    }
     const sdkName =
       normalizeIngestionSdkName(this.sdkName) ??
       OTEL_SDK_LANGUAGE_TO_SDK_NAME.get(
@@ -3735,7 +3731,9 @@ export class OtelIngestionProcessor {
       null;
     return isStructuredMetadataSdkVersion({
       sdkName,
-      sdkVersion: scopeSpan.scope.version,
+      sdkVersion: scopeSpan?.scope?.name?.startsWith("langfuse-sdk")
+        ? scopeSpan.scope.version
+        : this.sdkVersion,
     });
   }
 
@@ -3933,203 +3931,6 @@ export class OtelIngestionProcessor {
     } catch {
       // Fallthrough
     }
-  }
-
-  private extractSkills(
-    attributes: Record<string, unknown>,
-    observationType: string,
-    toolName: string,
-    input: unknown,
-    output: unknown,
-    statusCode: number | undefined,
-  ): {
-    skillsAvailable?: SkillsAvailable;
-    skillsResourceLoaded?: SkillsResourceLoaded;
-  } {
-    const manifest =
-      attributes[LangfuseOtelSpanAttributes.OBSERVATION_SKILLS_AVAILABLE];
-    // Skill inference is enabled only when an availability attribute is reported.
-    if (!manifest) return {};
-    if (
-      observationType !== ObservationType.GENERATION &&
-      (observationType !== ObservationType.TOOL ||
-        !SKILL_RESOURCE_TOOL_NAMES.has(toolName) ||
-        output == null ||
-        statusCode === 2 ||
-        parseObservationLevel(
-          attributes[LangfuseOtelSpanAttributes.OBSERVATION_LEVEL],
-        ) === ObservationLevel.ERROR)
-    ) {
-      return {};
-    }
-
-    let parsedManifest = Array.isArray(manifest)
-      ? manifest
-      : this.parseJsonPayloadWithMaxSize(
-          manifest,
-          MAX_SKILL_CATALOG_JSON_BYTES,
-          "skillsAvailable",
-        );
-    if (
-      Array.isArray(parsedManifest) &&
-      parsedManifest.length > MAX_SKILLS_PER_OBSERVATION
-    ) {
-      logger.warn("OTEL skill catalog dropped: item limit exceeded", {
-        projectId: this.projectId,
-        count: parsedManifest.length,
-        limit: MAX_SKILLS_PER_OBSERVATION,
-      });
-      parsedManifest = undefined;
-    }
-    const available = Array.isArray(parsedManifest)
-      ? SkillsAvailableSchema.safeParse(parsedManifest)
-      : undefined;
-    if (observationType === ObservationType.GENERATION) {
-      if (available?.success) return { skillsAvailable: available.data };
-      return {};
-    }
-
-    const candidate = this.extractSkillResource(
-      toolName,
-      input,
-      output,
-      available?.success ? available.data : [],
-    );
-    if (!candidate) return {};
-    if (
-      typeof candidate.filePath === "string" &&
-      candidate.filePath.length > MAX_SKILL_PATH_LENGTH
-    ) {
-      logger.warn(
-        "OTEL skill resource load dropped: path length limit exceeded",
-        {
-          projectId: this.projectId,
-          toolName,
-          length: candidate.filePath.length,
-          limit: MAX_SKILL_PATH_LENGTH,
-        },
-      );
-      return {};
-    }
-    const loaded = SkillsResourceLoadedSchema.element.safeParse(candidate);
-    if (!loaded.success) return {};
-
-    return {
-      ...(available?.success ? { skillsAvailable: available.data } : {}),
-      skillsResourceLoaded: [
-        { skillName: loaded.data.skillName, filePath: loaded.data.filePath },
-      ],
-    };
-  }
-
-  private extractSkillResource(
-    toolName: string,
-    input: unknown,
-    output: unknown,
-    available: SkillsAvailable,
-  ) {
-    const args = this.parseJsonPayloadWithMaxSize(
-      input,
-      MAX_SKILL_TOOL_ARGS_JSON_BYTES,
-      "toolInput",
-    );
-    if (!OtelIngestionProcessor.isPlainObject(args)) return;
-    const oversizedPath = [args.path, args.file_path].find(
-      (path) =>
-        typeof path === "string" &&
-        path.length > MAX_SKILL_TOOL_ARGS_JSON_BYTES,
-    );
-    if (typeof oversizedPath === "string") {
-      logger.warn(
-        "OTEL skill resource load dropped: input path length limit exceeded",
-        {
-          projectId: this.projectId,
-          toolName,
-          length: oversizedPath.length,
-          limit: MAX_SKILL_TOOL_ARGS_JSON_BYTES,
-        },
-      );
-      return;
-    }
-
-    switch (toolName) {
-      case "skill":
-      case "Skill":
-      case "loadSkill":
-        if (this.isFailedSkillActivation(output)) return;
-        return {
-          skillName: args.name ?? args.skill,
-          filePath: "SKILL.md",
-        };
-      case "skill_read":
-        return {
-          skillName: args.skillName,
-          filePath: args.path,
-        };
-      case "readFile":
-      case "Read":
-        return this.extractSkillResourceFromPath(
-          args.path ?? args.file_path,
-          available,
-        );
-      default:
-        return;
-    }
-  }
-
-  private extractSkillResourceFromPath(
-    path: unknown,
-    available: SkillsAvailable,
-  ) {
-    if (typeof path !== "string") return;
-    const segments = path.split("/");
-    const matches = segments.filter((segment) =>
-      available.some((skill) => skill.skillName === segment),
-    );
-    if (matches.length !== 1) return;
-    const skillName = matches[0];
-    return {
-      skillName,
-      filePath: segments.slice(segments.indexOf(skillName) + 1).join("/"),
-    };
-  }
-
-  private isFailedSkillActivation(output: unknown): boolean {
-    const result = this.parseJsonPayloadWithMaxSize(
-      output,
-      MAX_SKILL_ERROR_JSON_BYTES,
-      "toolOutput",
-    );
-    const text = typeof result === "string" ? result : output;
-    return (
-      (OtelIngestionProcessor.isPlainObject(result) &&
-        (result.isError === true || result.error !== undefined)) ||
-      (typeof text === "string" &&
-        /^(?:Skill|File) ".*" not found/.test(
-          text.slice(0, MAX_SKILL_ERROR_JSON_BYTES),
-        ))
-    );
-  }
-
-  private parseJsonPayloadWithMaxSize(
-    payload: unknown,
-    maxBytes: number,
-    field: "skillsAvailable" | "toolInput" | "toolOutput",
-  ): unknown {
-    if (
-      typeof payload === "string" &&
-      (payload.length > maxBytes ||
-        Buffer.byteLength(payload, "utf8") > maxBytes)
-    ) {
-      logger.warn("OTEL skill payload parsing skipped: byte limit exceeded", {
-        projectId: this.projectId,
-        field,
-        limitBytes: maxBytes,
-        stringLength: payload.length,
-      });
-      return undefined;
-    }
-    return this.parseJsonPayload(payload);
   }
 
   /**
