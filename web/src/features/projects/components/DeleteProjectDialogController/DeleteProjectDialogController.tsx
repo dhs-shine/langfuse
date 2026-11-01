@@ -1,3 +1,4 @@
+import { getGatewayIngestionProjectDeletionMessage } from "@/src/features/ai-gateway/fns/gatewayIngestionModePolicy";
 import { ExternalLink } from "@langfuse/icons";
 import { type ReactNode } from "react";
 import { useRouter } from "next/router";
@@ -9,7 +10,7 @@ import { usePostHogClientCapture } from "@/src/features/posthog-analytics";
 import { useQueryProject } from "@/src/features/projects/hooks";
 import { useHasProjectAccess } from "@/src/features/rbac";
 import { api, reportNonTrpcError } from "@/src/utils/api";
-import { DeleteProjectDialog } from "./DeleteProjectDialog";
+import { DeleteProjectDialog } from "@/src/features/projects/components/DeleteProjectDialogController/components/DeleteProjectDialog/DeleteProjectDialog";
 
 type DeleteProjectDialogControllerProps = {
   children: (control: {
@@ -61,7 +62,7 @@ export function DeleteProjectDialogController({
           return (
             <Dialog
               title="Project cannot be deleted"
-              text="This project is used as the AI Gateway ingestion project. Select another ingestion project before deleting it."
+              text={getGatewayIngestionProjectDeletionMessage()}
               actions={[
                 {
                   label: "Open AI Gateway settings",
