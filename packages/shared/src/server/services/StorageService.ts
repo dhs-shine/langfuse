@@ -8,6 +8,7 @@ import {
   PutObjectCommand,
   PutObjectCommandInput,
   S3Client,
+  type S3ClientConfig,
 } from "@aws-sdk/client-s3";
 import { Upload } from "@aws-sdk/lib-storage";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
@@ -25,7 +26,7 @@ import { logger } from "../logger";
 import { env } from "../../env";
 import { normalizeBlobStorageRegion } from "../../utils/stringChecks";
 import { backOff } from "exponential-backoff";
-import { ServiceUnavailableError } from "../../errors";
+import { ServiceUnavailableError } from "../../errors/ServiceUnavailableError";
 import {
   BufferedStreamUploader,
   type UploadPartStats,
@@ -43,7 +44,8 @@ import { URL } from "node:url";
 import {
   getSecureOutboundHttpAgents,
   type OutboundUrlConnectionValidationOptions,
-} from "../outbound-url";
+} from "../outbound-url/connection";
+
 import { isS3SlowDownError } from "./s3ThrottleError";
 
 export interface S3SseConfig {
@@ -368,10 +370,12 @@ export class StorageServiceFactory {
    * @param params.maxAttempts - Maximum AWS SDK attempts for each S3 operation.
    * @param params.connectionValidation - Optional connection-time DNS/IP validation for user-controlled endpoints.
    * @param params.s3RequestTimeoutMs - Optional S3 HTTP request deadline; timeout rejects the request.
+   * @param params.credentials - S3 only. Credentials provider that takes precedence over the access keys and never falls back to the default chain.
    */
   public static getInstance(params: {
     accessKeyId: string | undefined;
     secretAccessKey: string | undefined;
+    credentials?: S3ClientConfig["credentials"];
     bucketName: string;
     endpoint: string | undefined;
     externalEndpoint?: string | undefined;
@@ -784,6 +788,7 @@ class S3StorageService implements StorageService {
   constructor(params: {
     accessKeyId: string | undefined;
     secretAccessKey: string | undefined;
+    credentials?: S3ClientConfig["credentials"];
     bucketName: string;
     endpoint: string | undefined;
     externalEndpoint?: string | undefined;
@@ -796,15 +801,16 @@ class S3StorageService implements StorageService {
     connectionValidation?: OutboundUrlConnectionValidationOptions;
     s3RequestTimeoutMs?: number;
   }) {
-    // Use accessKeyId and secretAccessKey if provided or fallback to default credentials
+    // Use the credentials provider, else the access keys, else the default chain
     const { accessKeyId, secretAccessKey } = params;
     const credentials =
-      accessKeyId !== undefined && secretAccessKey !== undefined
+      params.credentials ??
+      (accessKeyId !== undefined && secretAccessKey !== undefined
         ? {
             accessKeyId,
             secretAccessKey,
           }
-        : undefined;
+        : undefined);
 
     const requestHandler = createS3RequestHandler(
       params.connectionValidation,
